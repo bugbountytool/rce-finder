@@ -1,0 +1,11 @@
+/rce-sentinel
+/rce-finder
+/targets.txt
+/rce-sentinel.tar.gz
+/scans/
+*.sarif
+*.rce-results.json
+*.exe
+*.test
+*.out
+.DS_Store

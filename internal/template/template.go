@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/bugbountytool/rce-finder/internal/requestbody"
 )
 
 // Severity is informational only; it never changes scanning behavior.
@@ -74,7 +76,11 @@ type Template struct {
 	// triggering an OOB callback.
 	PayloadTemplate string `yaml:"payload"`
 
-	BodyContentType string `yaml:"body_content_type,omitempty"`
+	BodyContentType string              `yaml:"body_content_type,omitempty"`
+	BodyFields      []requestbody.Field `yaml:"body_fields,omitempty"`
+	// MultipartBoundary is fixed in reviewed templates so request bytes are
+	// reproducible. Random per-request boundaries are not currently supported.
+	MultipartBoundary string `yaml:"multipart_boundary,omitempty"`
 
 	// TimeoutSeconds is how long to wait for an OOB callback before this
 	// probe is marked NOT_VULNERABLE rather than CONFIRMED.
@@ -119,6 +125,26 @@ func (t *Template) Validate() error {
 	if len(t.InjectionPoints) == 0 {
 		return fmt.Errorf("template %s: must declare at least one injection_point", t.ID)
 	}
+	switch t.BodyContentType {
+	case "", "application/x-www-form-urlencoded", "application/json":
+		if len(t.BodyFields) != 0 || t.MultipartBoundary != "" {
+			return fmt.Errorf("template %s: body_fields and multipart_boundary require XML or multipart content type", t.ID)
+		}
+	case "application/xml", "text/xml":
+		if len(t.BodyFields) == 0 {
+			return fmt.Errorf("template %s: XML requires declared text body_fields", t.ID)
+		}
+		if t.MultipartBoundary != "" {
+			return fmt.Errorf("template %s: multipart_boundary is only valid for multipart bodies", t.ID)
+		}
+	case "multipart/form-data":
+		if len(t.BodyFields) == 0 || t.MultipartBoundary == "" {
+			return fmt.Errorf("template %s: multipart requires declared text body_fields and a fixed boundary", t.ID)
+		}
+	default:
+		return fmt.Errorf("template %s: unsupported body_content_type %q", t.ID, t.BodyContentType)
+	}
+	var bodyInjections int
 	for i, ip := range t.InjectionPoints {
 		switch ip.Location {
 		case "header", "query", "body":
@@ -129,6 +155,23 @@ func (t *Template) Validate() error {
 			// no name required
 		default:
 			return fmt.Errorf("template %s: injection_points[%d] has unknown location %q", t.ID, i, ip.Location)
+		}
+		if ip.Location == "body" {
+			bodyInjections++
+		}
+	}
+	if len(t.BodyFields) > 0 {
+		if bodyInjections == 0 {
+			return fmt.Errorf("template %s: typed body requires a body injection point", t.ID)
+		}
+		declared := make(map[string]bool, len(t.BodyFields))
+		for _, field := range t.BodyFields {
+			declared[field.Name] = true
+		}
+		for _, ip := range t.InjectionPoints {
+			if ip.Location == "body" && !declared[ip.Name] {
+				return fmt.Errorf("template %s: body injection %q is not a declared text field", t.ID, ip.Name)
+			}
 		}
 	}
 	if t.Method == "" {

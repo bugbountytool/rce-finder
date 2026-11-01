@@ -35,6 +35,18 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "inventory", "discover":
+			return runInventory(args[1:])
+		case "scan":
+			args = args[1:]
+		}
+	}
+	return runScan(args)
+}
+
+func runScan(args []string) error {
 	fs := flag.NewFlagSet("rce-finder", flag.ExitOnError)
 	var (
 		targetsFile   = fs.String("targets", "", "path to file of explicitly in-scope target URLs, one per line (required)")
@@ -52,9 +64,11 @@ func run(args []string) error {
 		technologies  = fs.String("technologies", "", "comma-separated technology tags to select applicable templates only")
 		openAPI       = fs.String("openapi", "", "inspect a local OpenAPI v3 JSON file; inventory only")
 		headers       multiFlag
+		cookies       multiFlag
 		iAmAuthorized = fs.Bool("i-am-authorized", false, "required acknowledgement that you have explicit authorization to test every target in --targets")
 	)
 	fs.Var(&headers, "header", "additional request header, repeatable: 'Name: value'")
+	fs.Var(&cookies, "cookie", "in-memory session cookie, repeatable: 'name=value'; values are never reported or logged")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, `RCE Finder - template-driven, OOB-confirmation RCE scanner for authorized security testing
 
@@ -123,6 +137,10 @@ Flags:`)
 	opts.Headers, err = requestctx.Headers(headers)
 	if err != nil {
 		return fmt.Errorf("validating request headers: %w", err)
+	}
+	opts.CookieJar, err = requestctx.Cookies(cookies)
+	if err != nil {
+		return err
 	}
 
 	eng := engine.New(oobClient, opts)

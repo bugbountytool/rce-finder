@@ -33,8 +33,15 @@ evidence requirements, remediation, and references. Template data cannot
 execute local code.
 
 The HTTP adapter supports form-encoded bodies and an intentionally limited
-JSON object body mode. XML, multipart, GraphQL, SOAP, WebSocket, and TCP
-remain planned protocol adapters.
+JSON object body mode. XML is a declared, escaped text-field tree; multipart
+bodies contain declared text fields only and use a fixed reviewed boundary.
+Both are limited to 1 MiB and reject file fields and undeclared mutations.
+
+Local HAR and Postman imports are inventory-only and constrained by the
+explicit target file. OpenAPI imports remain path-only; server URLs, callbacks,
+webhooks, and external references are ignored. No importer performs network
+I/O or creates a scan target. GraphQL, SOAP, WebSocket, and TCP remain planned
+protocol adapters.
 
 ## Planned extensions
 

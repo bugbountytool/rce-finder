@@ -19,6 +19,7 @@ import (
 
 	"github.com/bugbountytool/rce-finder/internal/oob"
 	"github.com/bugbountytool/rce-finder/internal/policy"
+	"github.com/bugbountytool/rce-finder/internal/requestbody"
 	"github.com/bugbountytool/rce-finder/internal/scope"
 	"github.com/bugbountytool/rce-finder/internal/template"
 )
@@ -59,6 +60,8 @@ type Options struct {
 	MaxResponseBytes int64
 	Policy           policy.Policy
 	Headers          http.Header
+	CookieJar        http.CookieJar
+	MaxBodyBytes     int64
 }
 
 func DefaultOptions() Options {
@@ -68,6 +71,7 @@ func DefaultOptions() Options {
 		DryRun:           false,
 		HTTPTimeout:      10 * time.Second,
 		MaxResponseBytes: 1 << 20, // 1 MiB
+		MaxBodyBytes:     requestbody.MaxBytes,
 		Policy:           policy.Default(),
 	}
 }
@@ -90,6 +94,7 @@ func New(oobClient oob.Client, opts Options) *Engine {
 		limiter: newRateLimiter(opts.RequestsPerSec),
 		client: &http.Client{
 			Timeout: opts.HTTPTimeout,
+			Jar:     opts.CookieJar,
 			// Redirects may leave the operator's explicit scope. Record the
 			// response but never follow it automatically.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -183,7 +188,7 @@ func (e *Engine) runOne(ctx context.Context, j job) Result {
 	base.Canary = canary
 
 	payload := j.tmpl.Render(canary)
-	req, err := buildRequest(ctx, j.target.URL, j.tmpl, payload)
+	req, err := buildRequest(ctx, j.target.URL, j.tmpl, payload, e.Options.MaxBodyBytes)
 	if err != nil {
 		base.Status = StatusError
 		base.Detail = fmt.Sprintf("building request: %v", err)
@@ -261,9 +266,30 @@ func (e *Engine) runOne(ctx context.Context, j job) Result {
 	return base
 }
 
+// SetHTTPClient replaces the transport for a locally controlled lab or test.
+// Callers remain responsible for preserving the no-redirect policy.
+func (e *Engine) SetHTTPClient(client *http.Client) { e.client = client }
+
+// BuildRequest constructs a bounded probe request using only the explicit
+// target and validated template. The bodyLimit argument is required so callers
+// must choose a body budget explicitly.
+func BuildRequest(ctx context.Context, target *url.URL, t *template.Template, payload string, bodyLimit int64) (*http.Request, error) {
+	return buildRequest(ctx, target, t, payload, bodyLimit)
+}
+
+// RunTarget executes one already-scheduled target/template job. It is useful
+// for a reviewed plan; imported endpoints are never converted into targets.
+func (e *Engine) RunTarget(ctx context.Context, target scope.Target, tmpl *template.Template) Result {
+	return e.runOne(ctx, job{target: target, tmpl: tmpl})
+}
+
 // buildRequest constructs the single HTTP request for a probe, injecting
 // the rendered payload at every location the template specifies.
-func buildRequest(ctx context.Context, target *url.URL, t *template.Template, payload string) (*http.Request, error) {
+func buildRequest(ctx context.Context, target *url.URL, t *template.Template, payload string, bodyLimit ...int64) (*http.Request, error) {
+	limit := requestbody.MaxBytes
+	if len(bodyLimit) > 0 {
+		limit = bodyLimit[0]
+	}
 	u := *target
 	if t.PathTemplate != "" {
 		u.Path = joinPath(target.Path, t.PathTemplate)
@@ -299,7 +325,29 @@ func buildRequest(ctx context.Context, target *url.URL, t *template.Template, pa
 	}
 
 	var bodyReader io.Reader
-	if len(jsonBody) > 0 {
+	var typedBody bool
+	var bodyContentType string
+	if t.BodyContentType == "application/xml" || t.BodyContentType == "text/xml" || t.BodyContentType == "multipart/form-data" {
+		mutations := make(map[string]string)
+		for _, ip := range t.InjectionPoints {
+			if ip.Location == "body" {
+				mutations[ip.Name] = payload
+			}
+		}
+		var encoded []byte
+		var err error
+		if t.BodyContentType == "multipart/form-data" {
+			encoded, bodyContentType, err = requestbody.Multipart(t.BodyFields, mutations, t.MultipartBoundary, limit)
+		} else {
+			encoded, err = requestbody.XML(t.BodyFields, mutations, limit)
+			bodyContentType = t.BodyContentType
+		}
+		if err != nil {
+			return nil, fmt.Errorf("encoding typed request body: %w", err)
+		}
+		bodyReader = bytes.NewReader(encoded)
+		typedBody = true
+	} else if len(jsonBody) > 0 {
 		encoded, err := json.Marshal(jsonBody)
 		if err != nil {
 			return nil, fmt.Errorf("encoding JSON body: %w", err)
@@ -319,7 +367,9 @@ func buildRequest(ctx context.Context, target *url.URL, t *template.Template, pa
 			req.Header.Set(ip.Name, payload)
 		}
 	}
-	if len(bodyParts) > 0 || len(jsonBody) > 0 {
+	if typedBody {
+		req.Header.Set("Content-Type", bodyContentType)
+	} else if len(bodyParts) > 0 || len(jsonBody) > 0 {
 		ct := t.BodyContentType
 		if ct == "" {
 			ct = "application/x-www-form-urlencoded"

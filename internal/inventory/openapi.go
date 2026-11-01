@@ -13,6 +13,7 @@ import (
 type Endpoint struct {
 	Method string `json:"method"`
 	Path   string `json:"path"`
+	Source string `json:"source,omitempty"`
 }
 
 // LoadOpenAPIJSON reads OpenAPI v3 JSON. Server URLs and external references

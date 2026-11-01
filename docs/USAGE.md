@@ -98,6 +98,44 @@ Write a new immutable JSON snapshot for later reporting or review:
 ./rce-finder -targets targets.txt -i-am-authorized -markdown findings.md
 ```
 
+## Authenticated request context
+
+Repeat `-cookie name=value` to supply session cookies held in memory for the
+scan. Cookies are secure-only, are not persisted, and are excluded from logs,
+terminal/JSON output, SARIF, Markdown, and result snapshots. Error messages
+never echo cookie values. Header values supplied with `-header` are likewise
+request context, not report content. Shell history can contain command-line
+secrets; use an appropriately protected execution environment.
+
+## Local request inventory (no network traffic)
+
+`inventory` reads exactly one local HAR, Postman collection, or OpenAPI v3 JSON
+document and prints endpoint metadata. It never sends a request or writes a
+scan plan. The explicit target file remains required:
+
+```bash
+./rce-finder inventory -targets targets.txt -har reviewed.har
+./rce-finder inventory -targets targets.txt -postman collection.json -json
+./rce-finder inventory -targets targets.txt -openapi openapi.json
+```
+
+HAR imports retain only final request URLs inside an explicit target's scheme,
+host, effective port, and path boundary. Postman imports inventory literal,
+in-scope URLs only; variables and scripts are not evaluated. OpenAPI imports
+only declared paths. Its servers, callbacks, webhooks, and external references
+never create targets. Review these inventories manually before creating any
+explicit target file or template plan; inventory never starts an active scan.
+
+## Typed request bodies
+
+Templates can declare `application/xml` or `multipart/form-data` with
+`body_fields`. Every injection must name a declared text field. XML field names
+are dotted element paths, and values are encoded with XML escaping rather than
+raw substitution. Multipart bodies have a reviewed, fixed
+`multipart_boundary`; file fields and upload mutation are rejected. Encoded
+bodies are limited to 1 MiB. The resulting request bytes and content type are
+covered by golden tests.
+
 ## Flags reference
 
 Run `./rce-finder -h` for the full, current flag list.

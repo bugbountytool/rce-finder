@@ -1,0 +1,22 @@
+schema_version: rce-finder/v2
+id: php-twig-safe-oob
+name: PHP Twig context safe callback validation
+severity: high
+vuln_class: ssti
+cwe: ["CWE-1336"]
+technologies: ["php", "twig"]
+prerequisites:
+  required_technologies: ["php"]
+mode: safe-validation
+confidence_requirements: ["exact probe ID and HTTP protocol OOB match"]
+remediation: "Use reviewed Twig templates and pass untrusted values only as escaped template data. Keep Twig and the framework patched."
+references: ["https://twig.symfony.com/doc/3.x/api.html"]
+oob_protocol: http
+method: POST
+path: ""
+timeout_seconds: 3
+body_content_type: application/json
+injection_points:
+  - location: body
+    name: template
+payload: "{{ constant('RCE_FINDER_CANARY', '{{canary}}') }}"

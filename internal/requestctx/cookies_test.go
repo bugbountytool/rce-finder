@@ -18,7 +18,7 @@ func TestCookiesDoNotEchoSecretOnValidationError(t *testing.T) {
 }
 
 func TestCookiesAreScopedSecureAndPathIndependent(t *testing.T) {
-	jar, err := Cookies([]string{"session=abc", "csrf=xyz"})
+	jar, err := CookiesForHosts([]string{"session=abc", "csrf=xyz"}, []string{"example.test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,5 +29,9 @@ func TestCookiesAreScopedSecureAndPathIndependent(t *testing.T) {
 	}
 	if got := jar.Cookies(insecure); len(got) != 0 {
 		t.Fatalf("secure cookies sent over HTTP: %#v", got)
+	}
+	other, _ := url.Parse("https://other.example/")
+	if got := jar.Cookies(other); len(got) != 0 {
+		t.Fatalf("cookies leaked to an unlisted host: %#v", got)
 	}
 }

@@ -9,10 +9,13 @@ import (
 
 // explicitCookieJar supplies the operator's cookies only to the explicitly
 // supplied targets. It does not persist cookies or accept server-set cookies.
-type explicitCookieJar struct{ cookies []*http.Cookie }
+type explicitCookieJar struct {
+	cookies []*http.Cookie
+	hosts   map[string]bool
+}
 
 func (j explicitCookieJar) Cookies(u *url.URL) []*http.Cookie {
-	if u.Scheme != "https" {
+	if u.Scheme != "https" || !j.hosts[u.Host] {
 		return nil
 	}
 	out := make([]*http.Cookie, len(j.cookies))
@@ -24,7 +27,16 @@ func (j explicitCookieJar) SetCookies(*url.URL, []*http.Cookie) {}
 // Validation failures never include cookie values, and the jar is not a report
 // or snapshot field.
 func Cookies(entries []string) (http.CookieJar, error) {
-	jar := explicitCookieJar{}
+	return CookiesForHosts(entries, nil)
+}
+
+// CookiesForHosts binds cookies to explicit HTTPS target authorities. An empty
+// host list creates an inert jar, preventing accidental credential forwarding.
+func CookiesForHosts(entries []string, hosts []string) (http.CookieJar, error) {
+	jar := explicitCookieJar{hosts: make(map[string]bool, len(hosts))}
+	for _, host := range hosts {
+		jar.hosts[host] = true
+	}
 	var cookies []*http.Cookie
 	for _, entry := range entries {
 		name, value, ok := strings.Cut(entry, "=")

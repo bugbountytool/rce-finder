@@ -22,11 +22,12 @@ func WriteSARIF(w io.Writer, results []engine.Result) error {
 		URI string `json:"uri"`
 	}
 	type result struct {
-		RuleID     string     `json:"ruleId"`
-		Level      string     `json:"level"`
-		Message    message    `json:"message"`
-		Locations  []location `json:"locations,omitempty"`
-		Properties properties `json:"properties"`
+		RuleID              string            `json:"ruleId"`
+		Level               string            `json:"level"`
+		Message             message           `json:"message"`
+		Locations           []location        `json:"locations,omitempty"`
+		Properties          properties        `json:"properties"`
+		PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
 	}
 	type run struct {
 		Tool    tool     `json:"tool"`
@@ -41,6 +42,7 @@ func WriteSARIF(w io.Writer, results []engine.Result) error {
 	rules := make(map[string]rule)
 	var output []result
 	for _, item := range results {
+		item = sanitized(item)
 		if item.Status == engine.StatusDryRun || item.Status == engine.StatusSkipped {
 			continue
 		}
@@ -50,9 +52,10 @@ func WriteSARIF(w io.Writer, results []engine.Result) error {
 		}
 		rules[id] = rule{ID: id, Name: item.Name, ShortDescription: message{Text: item.Name}, HelpURI: firstReference(item.References)}
 		output = append(output, result{
-			RuleID: id, Level: sarifLevel(item), Message: message{Text: fmt.Sprintf("%s: %s", item.Status, item.Detail)},
-			Locations:  []location{{URI: item.Target}},
-			Properties: properties{Status: string(item.Status), Severity: item.Severity, ProbeID: item.ProbeID},
+			RuleID: id, Level: sarifLevel(item), Message: message{Text: fmt.Sprintf("%s: %s", item.Classification, item.Detail)},
+			Locations:           []location{{URI: item.Target}},
+			Properties:          properties{Status: string(item.Status), Classification: string(item.Classification), Severity: item.Severity, ProbeID: item.ProbeID, ScanID: item.ScanID, Evidence: evidenceDigests(item), Confidence: item.Confidence.Score, Remediation: item.Remediation},
+			PartialFingerprints: map[string]string{"rceFinderJobId": item.JobID},
 		})
 	}
 	allRules := make([]rule, 0, len(rules))
@@ -73,9 +76,22 @@ type rule struct {
 	HelpURI          string  `json:"helpUri,omitempty"`
 }
 type properties struct {
-	Status   string `json:"status"`
-	Severity string `json:"severity,omitempty"`
-	ProbeID  string `json:"probe_id,omitempty"`
+	Status         string   `json:"status"`
+	Classification string   `json:"classification,omitempty"`
+	Severity       string   `json:"severity,omitempty"`
+	ProbeID        string   `json:"probe_id,omitempty"`
+	ScanID         string   `json:"scan_id,omitempty"`
+	Evidence       []string `json:"evidence_digests,omitempty"`
+	Confidence     int      `json:"confidence_score"`
+	Remediation    string   `json:"remediation,omitempty"`
+}
+
+func evidenceDigests(result engine.Result) []string {
+	out := make([]string, 0, len(result.Evidence))
+	for _, item := range result.Evidence {
+		out = append(out, string(item.Kind)+":"+item.Digest)
+	}
+	return out
 }
 
 func firstReference(refs []string) string {

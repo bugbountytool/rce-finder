@@ -11,6 +11,24 @@ explicit target file -> scope policy -> validated template -> bounded request
 -> self-hosted OOB correlation -> evidence-based result
 ```
 
+## Scheduler and evidence
+
+Deduplicated jobs have stable IDs derived from target, template ID, and request
+shape. Global/per-host rate limits, transient-only retries, and per-host circuit
+breakers bound active work. Atomic snapshots contain completed job IDs and
+scope/template/policy fingerprints, never request credentials. Resume filters
+completed jobs before the scheduler can issue them.
+
+Every result carries a shared status/classification, confidence reasons,
+remediation/metadata, and redacted evidence digests. Request/response bodies are
+hashed rather than stored. Exact OOB probe-ID/protocol correlation is required
+for `CONFIRMED`; response indicators alone are not `CONFIRMED`, and a single
+response is not described as reproducible high-confidence evidence.
+
+Local template packs may be signed with Ed25519 keys configured by the operator.
+Signed packs authenticate the exact file set and bytes. Unsigned local packs
+require explicit opt-in. No remote template download path exists.
+
 ## Current safety invariants
 
 - HTTP(S) target files are explicit and operator supplied.
@@ -45,6 +63,8 @@ protocol adapters.
 
 ## Planned extensions
 
-Fingerprinting, protocol adapters, persistent evidence, signed template packs,
-SARIF, and distributed workers remain planned work. They must preserve the
-same safety invariants rather than bypass them.
+Real version-specific framework fixtures, complete OOB-correlated protocol
+adapters, persistent enterprise state, and distributed workers remain planned
+work. GraphQL/SOAP/WSDL/WebSocket corpus parsing is local-only at present;
+there is no live TCP/WebSocket scanning path. These extensions must preserve
+the same safety invariants rather than bypass them.

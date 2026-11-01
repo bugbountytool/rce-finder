@@ -6,12 +6,11 @@ import (
 	"time"
 )
 
-// rateLimiter is a simple token-bucket limiter so scans default to a
-// conservative request rate rather than hammering targets.
+// rateLimiter serializes request start times and is cancellation-aware.
 type rateLimiter struct {
 	mu       sync.Mutex
 	interval time.Duration
-	last     time.Time
+	next     time.Time
 }
 
 func newRateLimiter(perSecond float64) *rateLimiter {
@@ -21,18 +20,23 @@ func newRateLimiter(perSecond float64) *rateLimiter {
 	return &rateLimiter{interval: time.Duration(float64(time.Second) / perSecond)}
 }
 
-func (r *rateLimiter) Wait(ctx context.Context) {
+func (r *rateLimiter) Wait(ctx context.Context) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	now := time.Now()
-	next := r.last.Add(r.interval)
-	if next.After(now) {
-		select {
-		case <-time.After(next.Sub(now)):
-		case <-ctx.Done():
-		}
-		r.last = next
-	} else {
-		r.last = now
+	start := now
+	if r.next.After(now) {
+		start = r.next
 	}
+	r.next = start.Add(r.interval)
+	r.mu.Unlock()
+	if wait := time.Until(start); wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return ctx.Err()
 }

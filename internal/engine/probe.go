@@ -7,18 +7,24 @@ package engine
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/bugbountytool/rce-finder/internal/evidence"
 	"github.com/bugbountytool/rce-finder/internal/oob"
 	"github.com/bugbountytool/rce-finder/internal/policy"
+	"github.com/bugbountytool/rce-finder/internal/redact"
 	"github.com/bugbountytool/rce-finder/internal/requestbody"
 	"github.com/bugbountytool/rce-finder/internal/scope"
 	"github.com/bugbountytool/rce-finder/internal/template"
@@ -28,27 +34,49 @@ import (
 type Status string
 
 const (
-	StatusConfirmed     Status = "CONFIRMED"
-	StatusNotVulnerable Status = "NOT_VULNERABLE"
-	StatusDryRun        Status = "DRY_RUN"
-	StatusSkipped       Status = "SKIPPED"
-	StatusBlocked       Status = "BLOCKED"
-	StatusError         Status = "ERROR"
+	StatusConfirmed      Status = "CONFIRMED"
+	StatusNotVulnerable  Status = "NOT_VULNERABLE"
+	StatusHighConfidence Status = "HIGH_CONFIDENCE"
+	StatusPotential      Status = "POTENTIAL"
+	StatusInconclusive   Status = "INCONCLUSIVE"
+	StatusDryRun         Status = "DRY_RUN"
+	StatusSkipped        Status = "SKIPPED"
+	StatusBlocked        Status = "BLOCKED"
+	StatusError          Status = "ERROR"
 )
 
 // Result is the outcome of running one template against one target.
 type Result struct {
-	ProbeID    string    `json:"probe_id"`
-	Target     string    `json:"target"`
-	TemplateID string    `json:"template_id"`
-	Name       string    `json:"name"`
-	Severity   string    `json:"severity"`
-	References []string  `json:"references,omitempty"`
-	Status     Status    `json:"status"`
-	Canary     string    `json:"canary,omitempty"`
-	Detail     string    `json:"detail,omitempty"`
-	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at"`
+	ProbeID    string   `json:"probe_id"`
+	ScanID     string   `json:"scan_id,omitempty"`
+	JobID      string   `json:"job_id,omitempty"`
+	Target     string   `json:"target"`
+	TemplateID string   `json:"template_id"`
+	Name       string   `json:"name"`
+	Severity   string   `json:"severity"`
+	References []string `json:"references,omitempty"`
+	Status     Status   `json:"status"`
+	// Classification is the same value as Status, explicitly named for report
+	// consumers. CONFIRMED requires an exact correlated OOB interaction.
+	Classification   Status            `json:"classification"`
+	Confidence       Confidence        `json:"confidence"`
+	Evidence         []evidence.Record `json:"evidence,omitempty"`
+	Remediation      string            `json:"remediation,omitempty"`
+	CWEs             []string          `json:"cwe,omitempty"`
+	CVEs             []string          `json:"cve,omitempty"`
+	Technologies     []string          `json:"technologies,omitempty"`
+	Canary           string            `json:"-"`
+	TransientNetwork bool              `json:"-"`
+	CanaryDigest     string            `json:"canary_sha256,omitempty"`
+	Detail           string            `json:"detail,omitempty"`
+	SkipReason       string            `json:"skip_reason,omitempty"`
+	StartedAt        time.Time         `json:"started_at"`
+	FinishedAt       time.Time         `json:"finished_at"`
+}
+
+type Confidence struct {
+	Score   int      `json:"score"`
+	Reasons []string `json:"reasons"`
 }
 
 // Options configures a scan run.
@@ -62,6 +90,12 @@ type Options struct {
 	Headers          http.Header
 	CookieJar        http.CookieJar
 	MaxBodyBytes     int64
+	PerHostRPS       float64
+	MaxRetries       int
+	RetryBackoff     time.Duration
+	HostErrorBudget  int
+	ScanID           string
+	Progress         func(ProgressEvent)
 }
 
 func DefaultOptions() Options {
@@ -72,6 +106,10 @@ func DefaultOptions() Options {
 		HTTPTimeout:      10 * time.Second,
 		MaxResponseBytes: 1 << 20, // 1 MiB
 		MaxBodyBytes:     requestbody.MaxBytes,
+		PerHostRPS:       1,
+		MaxRetries:       2,
+		RetryBackoff:     250 * time.Millisecond,
+		HostErrorBudget:  5,
 		Policy:           policy.Default(),
 	}
 }
@@ -82,6 +120,8 @@ type Engine struct {
 	Options Options
 	limiter *rateLimiter
 	client  *http.Client
+	hosts   map[string]*hostState
+	hostsMu sync.Mutex
 }
 
 func New(oobClient oob.Client, opts Options) *Engine {
@@ -92,6 +132,7 @@ func New(oobClient oob.Client, opts Options) *Engine {
 		OOB:     oobClient,
 		Options: opts,
 		limiter: newRateLimiter(opts.RequestsPerSec),
+		hosts:   make(map[string]*hostState),
 		client: &http.Client{
 			Timeout: opts.HTTPTimeout,
 			Jar:     opts.CookieJar,
@@ -103,59 +144,12 @@ func New(oobClient oob.Client, opts Options) *Engine {
 }
 
 // job is one (target, template) unit of work.
-type job struct {
-	target scope.Target
-	tmpl   *template.Template
-}
+type job = Job
 
 // Run executes every template against every target and streams results to
 // the returned channel, closing it when the scan is complete.
 func (e *Engine) Run(ctx context.Context, targets []scope.Target, templates []*template.Template) <-chan Result {
-	jobs := make(chan job)
-	results := make(chan Result)
-
-	go func() {
-		defer close(jobs)
-		for _, t := range targets {
-			for _, tmpl := range templates {
-				select {
-				case jobs <- job{target: t, tmpl: tmpl}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
-
-	workers := e.Options.Concurrency
-	if workers < 1 {
-		workers = 1
-	}
-
-	done := make(chan struct{}, workers)
-	for i := 0; i < workers; i++ {
-		go func() {
-			defer func() { done <- struct{}{} }()
-			for j := range jobs {
-				e.limiter.Wait(ctx)
-				r := e.runOne(ctx, j)
-				select {
-				case results <- r:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
-	}
-
-	go func() {
-		for i := 0; i < workers; i++ {
-			<-done
-		}
-		close(results)
-	}()
-
-	return results
+	return e.RunJobs(ctx, Jobs(targets, templates))
 }
 
 func (e *Engine) runOne(ctx context.Context, j job) Result {
@@ -163,37 +157,43 @@ func (e *Engine) runOne(ctx context.Context, j job) Result {
 	probeID := uuid.NewString()
 
 	base := Result{
-		ProbeID:    probeID,
-		Target:     j.target.Raw,
-		TemplateID: j.tmpl.ID,
-		Name:       j.tmpl.Name,
-		Severity:   string(j.tmpl.Severity),
-		References: j.tmpl.References,
-		StartedAt:  started,
+		ProbeID:      probeID,
+		ScanID:       e.Options.ScanID,
+		JobID:        j.ID,
+		Target:       j.Target.Raw,
+		TemplateID:   j.Tmpl.ID,
+		Name:         j.Tmpl.Name,
+		Severity:     string(j.Tmpl.Severity),
+		References:   j.Tmpl.References,
+		Remediation:  j.Tmpl.Remediation,
+		CWEs:         j.Tmpl.CWEs,
+		CVEs:         j.Tmpl.CVEs,
+		Technologies: j.Tmpl.Technologies,
+		StartedAt:    started,
 	}
-	if !e.Options.Policy.AllowsTemplate(policy.Mode(j.tmpl.Mode)) {
+	if !e.Options.Policy.AllowsTemplate(policy.Mode(j.Tmpl.Mode)) {
 		base.Status = StatusSkipped
-		base.Detail = fmt.Sprintf("template requires %s mode; scan policy is %s", j.tmpl.Mode, e.Options.Policy.Mode)
-		base.FinishedAt = time.Now()
-		return base
+		base.Detail = fmt.Sprintf("template requires %s mode; scan policy is %s", j.Tmpl.Mode, e.Options.Policy.Mode)
+		base.SkipReason = base.Detail
+		return finishResult(base)
 	}
 
 	canary, err := e.OOB.Issue(ctx, probeID)
 	if err != nil {
 		base.Status = StatusError
 		base.Detail = fmt.Sprintf("issuing canary: %v", err)
-		base.FinishedAt = time.Now()
-		return base
+		return finishResult(base)
 	}
 	base.Canary = canary
+	canarySum := sha256.Sum256([]byte(canary))
+	base.CanaryDigest = hex.EncodeToString(canarySum[:])
 
-	payload := j.tmpl.Render(canary)
-	req, err := buildRequest(ctx, j.target.URL, j.tmpl, payload, e.Options.MaxBodyBytes)
+	payload := j.Tmpl.Render(canary)
+	req, err := buildRequest(ctx, j.Target.URL, j.Tmpl, payload, e.Options.MaxBodyBytes)
 	if err != nil {
 		base.Status = StatusError
 		base.Detail = fmt.Sprintf("building request: %v", err)
-		base.FinishedAt = time.Now()
-		return base
+		return finishResult(base)
 	}
 	for name, values := range e.Options.Headers {
 		for _, value := range values {
@@ -201,38 +201,66 @@ func (e *Engine) runOne(ctx context.Context, j job) Result {
 		}
 	}
 
+	var requestBytes []byte
+	if req.GetBody != nil {
+		requestBody, _ := req.GetBody()
+		if requestBody != nil {
+			requestBytes, _ = io.ReadAll(requestBody)
+			requestBody.Close()
+		}
+	}
+	base.Evidence = append(base.Evidence, requestEvidence(req, requestBytes, probeID, canary))
+
 	if e.Options.DryRun {
 		base.Status = StatusDryRun
-		base.Detail = fmt.Sprintf("[dry-run] would send %s %s", req.Method, req.URL.String())
-		base.FinishedAt = time.Now()
-		return base
+		base.Detail = fmt.Sprintf("[dry-run] would send %s %s", req.Method, redact.URL(req.URL.String(), canary))
+		return finishResult(base)
 	}
 
-	resp, err := e.client.Do(req)
+	resp, err := e.doRequest(req)
 	if err != nil {
 		base.Status = StatusError
-		base.Detail = fmt.Sprintf("sending request: %v", err)
-		base.FinishedAt = time.Now()
-		return base
+		if errors.Is(err, errHostCircuitOpen) || errors.Is(err, context.Canceled) {
+			base.Status = StatusBlocked
+		}
+		base.TransientNetwork = errors.Is(err, errTransientNetwork)
+		base.Detail = fmt.Sprintf("sending request to %s: %v", redact.URL(req.URL.String(), canary), redact.Text(err.Error(), canary))
+		return finishResult(base)
 	}
 	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
 		resp.Body.Close()
 		base.Status = StatusBlocked
-		base.Detail = fmt.Sprintf("redirect to %q was not followed by scope policy", resp.Header.Get("Location"))
-		base.FinishedAt = time.Now()
-		return base
+		base.Detail = "redirect response was not followed by scope policy"
+		base.SkipReason = base.Detail
+		return finishResult(base)
 	}
 	limit := e.Options.MaxResponseBytes
 	if limit <= 0 {
 		limit = 1 << 20
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, limit))
+	responseBytes, truncated, readErr := readBoundedBody(resp.Body, limit)
 	resp.Body.Close()
+	base.Evidence = append(base.Evidence, responseEvidence(resp, responseBytes, probeID, truncated))
+	if readErr != nil {
+		base.Status = StatusInconclusive
+		base.Detail = "response body could not be read completely"
+		return finishResult(base)
+	}
+	if status, detail := classifyResponse(j.Tmpl, resp.StatusCode, responseBytes); status != "" {
+		base.Status = status
+		base.Detail = detail
+		return finishResult(base)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		base.Status = StatusInconclusive
+		base.Detail = "response may indicate access control or request filtering; OOB correlation not attempted"
+		return finishResult(base)
+	}
 
 	// Wait up to the template's timeout for an OOB callback, polling
 	// periodically. This is where "confirmed" vs "not vulnerable" is
 	// actually decided — never from the HTTP response itself.
-	timeout := time.Duration(j.tmpl.TimeoutSeconds) * time.Second
+	timeout := time.Duration(j.Tmpl.TimeoutSeconds) * time.Second
 	deadline := time.Now().Add(timeout)
 	pollInterval := 500 * time.Millisecond
 
@@ -241,29 +269,26 @@ func (e *Engine) runOne(ctx context.Context, j job) Result {
 		if err != nil {
 			base.Status = StatusError
 			base.Detail = fmt.Sprintf("polling OOB: %v", err)
-			base.FinishedAt = time.Now()
-			return base
+			return finishResult(base)
 		}
-		if interaction != nil && interaction.ProbeID == probeID && interaction.Protocol == j.tmpl.OOBProtocol {
+		if interaction != nil && interaction.ProbeID == probeID && interaction.Protocol == j.Tmpl.OOBProtocol {
 			base.Status = StatusConfirmed
+			base.Evidence = append(base.Evidence, interactionEvidence(interaction, probeID))
 			base.Detail = fmt.Sprintf("OOB %s callback received from %s", interaction.Protocol, interaction.SourceIP)
-			base.FinishedAt = time.Now()
-			return base
+			return finishResult(base)
 		}
 		select {
 		case <-ctx.Done():
-			base.Status = StatusError
+			base.Status = StatusInconclusive
 			base.Detail = "context cancelled while waiting for callback"
-			base.FinishedAt = time.Now()
-			return base
+			return finishResult(base)
 		case <-time.After(pollInterval):
 		}
 	}
 
 	base.Status = StatusNotVulnerable
 	base.Detail = "no OOB callback observed within timeout"
-	base.FinishedAt = time.Now()
-	return base
+	return finishResult(base)
 }
 
 // SetHTTPClient replaces the transport for a locally controlled lab or test.
@@ -280,7 +305,7 @@ func BuildRequest(ctx context.Context, target *url.URL, t *template.Template, pa
 // RunTarget executes one already-scheduled target/template job. It is useful
 // for a reviewed plan; imported endpoints are never converted into targets.
 func (e *Engine) RunTarget(ctx context.Context, target scope.Target, tmpl *template.Template) Result {
-	return e.runOne(ctx, job{target: target, tmpl: tmpl})
+	return e.runOne(ctx, job{Target: target, Tmpl: tmpl, ID: NewJob(target, tmpl).ID})
 }
 
 // buildRequest constructs the single HTTP request for a probe, injecting
@@ -327,6 +352,7 @@ func buildRequest(ctx context.Context, target *url.URL, t *template.Template, pa
 	var bodyReader io.Reader
 	var typedBody bool
 	var bodyContentType string
+	var bodyBytes []byte
 	if t.BodyContentType == "application/xml" || t.BodyContentType == "text/xml" || t.BodyContentType == "multipart/form-data" {
 		mutations := make(map[string]string)
 		for _, ip := range t.InjectionPoints {
@@ -345,16 +371,22 @@ func buildRequest(ctx context.Context, target *url.URL, t *template.Template, pa
 		if err != nil {
 			return nil, fmt.Errorf("encoding typed request body: %w", err)
 		}
-		bodyReader = bytes.NewReader(encoded)
+		bodyBytes = encoded
 		typedBody = true
 	} else if len(jsonBody) > 0 {
 		encoded, err := json.Marshal(jsonBody)
 		if err != nil {
 			return nil, fmt.Errorf("encoding JSON body: %w", err)
 		}
-		bodyReader = bytes.NewReader(encoded)
+		bodyBytes = encoded
 	} else if len(bodyParts) > 0 {
-		bodyReader = bytes.NewBufferString(strings.Join(bodyParts, "&"))
+		bodyBytes = []byte(strings.Join(bodyParts, "&"))
+	}
+	if int64(len(bodyBytes)) > limit {
+		return nil, fmt.Errorf("encoded request body exceeds %d-byte limit", limit)
+	}
+	if bodyBytes != nil {
+		bodyReader = bytes.NewReader(bodyBytes)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), bodyReader)

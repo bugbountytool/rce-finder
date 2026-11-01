@@ -23,7 +23,7 @@ func NewJSONWriter(w io.Writer) *JSONWriter {
 }
 
 func (j *JSONWriter) Write(r engine.Result) error {
-	return j.enc.Encode(r)
+	return j.enc.Encode(sanitized(r))
 }
 
 // TableWriter prints a human-readable, aligned summary table as results
@@ -44,6 +44,7 @@ func NewTableWriter(w io.Writer) *TableWriter {
 }
 
 func (t *TableWriter) Write(r engine.Result) error {
+	r = sanitized(r)
 	if !t.header {
 		fmt.Fprintln(t.tw, "STATUS\tSEVERITY\tTEMPLATE\tTARGET\tDETAIL")
 		t.header = true

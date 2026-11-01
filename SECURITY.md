@@ -34,6 +34,17 @@ regardless of intent.
   any request. This is not a technical control (it cannot verify your
   authorization), it is a deliberate point of friction and a clear record of
   intent.
+- Redirects are never followed for target requests, fingerprints, or OOB API
+  calls. Cookies are held in memory, sent only to explicitly listed HTTPS
+  authorities, and excluded from logs/reports/snapshots. Authorization headers
+  are likewise never serialized as report content.
+- Imported HAR/Postman/OpenAPI metadata cannot create scan targets. Template
+  paths are applied only to an already explicit target. There is no crawler,
+  automatic subdomain discovery, CIDR/range scan, or remote template download.
+- Result evidence redacts canaries, URL query values/user info, sensitive
+  headers, and raw bodies. Operational errors are sanitized before display.
+- Template packs are schema-validated and may be authenticated with locally
+  configured Ed25519 keys. Unsigned local templates require explicit opt-in.
 - All included templates use OOB confirmation rather than destructive
   payloads, by the project's own contribution rules (see CONTRIBUTING.md).
 

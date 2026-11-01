@@ -65,16 +65,6 @@ func TestRunOneConfirmsMatchingOOBCallback(t *testing.T) {
 	}
 }
 
-func TestRunOneSkipsAdvancedTemplateInSafeMode(t *testing.T) {
-	tmpl := testTemplate()
-	tmpl.Mode = "advanced-authorized"
-	eng := engine.New(staticOOB{protocol: "dns"}, engine.DefaultOptions())
-	result := eng.RunTarget(context.Background(), testTarget(), tmpl)
-	if result.Status != engine.StatusSkipped {
-		t.Fatalf("advanced template result = %#v, want SKIPPED", result)
-	}
-}
-
 func TestRunOneBlocksRedirectRatherThanFollowingIt(t *testing.T) {
 	eng := engine.New(staticOOB{protocol: "dns"}, engine.DefaultOptions())
 	eng.SetHTTPClient(&http.Client{
@@ -93,7 +83,8 @@ func TestRunOneBlocksRedirectRatherThanFollowingIt(t *testing.T) {
 
 func TestRunOneCookieJarSendsSecretButResultAndFormatsDoNot(t *testing.T) {
 	const secret = "cookie-secret-do-not-report"
-	jar, err := requestctx.Cookies([]string{"session=" + secret})
+	target := testTarget()
+	jar, err := requestctx.CookiesForHosts([]string{"session=" + secret}, []string{target.URL.Host})
 	if err != nil {
 		t.Fatal(err)
 	}

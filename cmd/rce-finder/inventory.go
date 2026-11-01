@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"os"
 
 	"github.com/bugbountytool/rce-finder/internal/inventory"
 	"github.com/bugbountytool/rce-finder/internal/policy"
@@ -22,7 +21,7 @@ func runInventory(args []string) error {
 	openAPI := fs.String("openapi", "", "local OpenAPI v3 JSON file; declared paths only, no servers or references")
 	jsonOut := fs.Bool("json", false, "print JSON instead of a tab-separated table")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: rce-finder inventory -targets targets.txt [-har file | -postman file | -openapi file] [-json]\n\nInventory is local-only and never sends requests or creates scan targets.")
+		fmt.Fprintln(cliStderr, "Usage: rce-finder inventory -targets targets.txt [-har file | -postman file | -openapi file] [-json]\n\nInventory is local-only and never sends requests or creates scan targets.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -60,14 +59,14 @@ func runInventory(args []string) error {
 		return err
 	}
 	if *jsonOut {
-		encoder := json.NewEncoder(os.Stdout)
+		encoder := json.NewEncoder(cliStdout)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(endpoints)
 	}
-	fmt.Println("METHOD\tPATH\tSOURCE")
+	fmt.Fprintln(cliStdout, "METHOD\tPATH\tSOURCE")
 	for _, endpoint := range endpoints {
-		fmt.Printf("%s\t%s\t%s\n", endpoint.Method, endpoint.Path, endpoint.Source)
+		fmt.Fprintf(cliStdout, "%s\t%s\t%s\n", endpoint.Method, endpoint.Path, endpoint.Source)
 	}
-	fmt.Fprintf(os.Stderr, "inventoried %d endpoint(s); no network requests sent and no active scan planned\n", len(endpoints))
+	fmt.Fprintf(cliStderr, "inventoried %d endpoint(s); no network requests sent and no active scan planned\n", len(endpoints))
 	return nil
 }

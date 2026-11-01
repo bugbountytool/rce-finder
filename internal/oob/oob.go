@@ -32,7 +32,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -124,13 +127,27 @@ type HTTPPollingClient struct {
 func NewHTTPPollingClient(baseURL string) *HTTPPollingClient {
 	return &HTTPPollingClient{
 		BaseURL:    baseURL,
-		HTTPClient: &http.Client{Timeout: 10 * time.Second},
+		HTTPClient: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	}
+}
+
+func (c *HTTPPollingClient) endpoint(path string, query url.Values) (string, error) {
+	base, err := url.Parse(c.BaseURL)
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		return "", fmt.Errorf("OOB server must be an absolute HTTP(S) URL without credentials or query")
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + path
+	base.RawQuery = query.Encode()
+	return base.String(), nil
 }
 
 func (c *HTTPPollingClient) Issue(ctx context.Context, probeID string) (string, error) {
 	reqBody, _ := json.Marshal(map[string]string{"probe_id": probeID})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/issue", jsonReader(reqBody))
+	endpoint, err := c.endpoint("/issue", nil)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, jsonReader(reqBody))
 	if err != nil {
 		return "", err
 	}
@@ -146,14 +163,33 @@ func (c *HTTPPollingClient) Issue(ctx context.Context, probeID string) (string, 
 	var out struct {
 		Canary string `json:"canary"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&out); err != nil {
 		return "", fmt.Errorf("decoding issue response: %w", err)
+	}
+	if !validCanary(out.Canary) {
+		return "", fmt.Errorf("OOB server returned an invalid canary")
 	}
 	return out.Canary, nil
 }
 
+func validCanary(value string) bool {
+	if value == "" || len(value) > 512 || strings.ContainsAny(value, "\r\n\t /\\?#@:") {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x21 || r > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *HTTPPollingClient) Poll(ctx context.Context, probeID string) (*Interaction, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/poll?probe_id="+probeID, nil)
+	endpoint, err := c.endpoint("/poll", url.Values{"probe_id": {probeID}})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +204,7 @@ func (c *HTTPPollingClient) Poll(ctx context.Context, probeID string) (*Interact
 	var out struct {
 		Interaction *Interaction `json:"interaction"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decoding poll response: %w", err)
 	}
 	return out.Interaction, nil

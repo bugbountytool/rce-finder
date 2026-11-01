@@ -30,7 +30,7 @@ stub client never reports a hit. See docs/OOB.md.
 See exactly what requests would be sent, without sending them:
 
 ```bash
-./rce-finder -targets targets.txt -i-am-authorized -dry-run
+./rce-finder -targets targets.txt -i-am-authorized -allow-unsigned-local-templates -dry-run
 ```
 
 ## 4. Run for real
@@ -39,6 +39,7 @@ See exactly what requests would be sent, without sending them:
 ./rce-finder \
   -targets targets.txt \
   -i-am-authorized \
+  -allow-unsigned-local-templates \
   -oob-server https://your-interaction-server.example \
   -rate 2 \
   -concurrency 5
@@ -48,7 +49,7 @@ To reduce probes to templates applicable to a known stack, select declared
 technology tags explicitly:
 
 ```bash
-./rce-finder -targets targets.txt -i-am-authorized -technologies java,jvm -dry-run
+./rce-finder -targets targets.txt -i-am-authorized -allow-unsigned-local-templates -technologies java,jvm -dry-run
 ```
 
 ## 5. Read the results
@@ -56,7 +57,7 @@ technology tags explicitly:
 ```
 STATUS     SEVERITY  TEMPLATE                  TARGET                        DETAIL
 CONFIRMED  critical  jndi-generic-oob          https://api.example.com       OOB dns callback received from 203.0.113.4
-NOT_VULNERABLE  high  ssti-generic-oob         https://api.example.com       no OOB callback observed within timeout
+NOT_VULNERABLE  high  el-injection-generic-oob  https://api.example.com  no OOB callback observed within timeout
 ```
 
 A `CONFIRMED` result means the target made an outbound DNS/HTTP request in
@@ -73,7 +74,7 @@ execution path could all suppress the callback.
 ## Machine-readable output
 
 ```bash
-./rce-finder -targets targets.txt -i-am-authorized -json -oob-server ... | jq 'select(.status == "CONFIRMED")'
+./rce-finder -targets targets.txt -i-am-authorized -allow-unsigned-local-templates -json -oob-server ... | jq 'select(.status == "CONFIRMED")'
 ```
 
 ## SARIF output
@@ -81,7 +82,7 @@ execution path could all suppress the callback.
 Write CI-friendly SARIF 2.1.0 without overwriting an existing file:
 
 ```bash
-./rce-finder -targets targets.txt -i-am-authorized -sarif findings.sarif
+./rce-finder -targets targets.txt -i-am-authorized -allow-unsigned-local-templates -sarif findings.sarif
 ```
 
 ## Persistent local results
@@ -89,13 +90,13 @@ Write CI-friendly SARIF 2.1.0 without overwriting an existing file:
 Write a new immutable JSON snapshot for later reporting or review:
 
 ```bash
-./rce-finder -targets targets.txt -i-am-authorized -results scans/scan-001.json
+./rce-finder -targets targets.txt -i-am-authorized -allow-unsigned-local-templates -results scans/scan-001.json
 ```
 
 ## Markdown report
 
 ```bash
-./rce-finder -targets targets.txt -i-am-authorized -markdown findings.md
+./rce-finder -targets targets.txt -i-am-authorized -allow-unsigned-local-templates -markdown findings.md
 ```
 
 ## Authenticated request context
@@ -135,6 +136,105 @@ raw substitution. Multipart bodies have a reviewed, fixed
 `multipart_boundary`; file fields and upload mutation are rejected. Encoded
 bodies are limited to 1 MiB. The resulting request bytes and content type are
 covered by golden tests.
+
+## Template trust and planning
+
+Unsigned local templates require `-allow-unsigned-local-templates` for scans.
+For a signed pack, configure local trusted Ed25519 public keys and omit that
+flag:
+
+```bash
+./rce-finder templates verify -templates templates/packs -trusted-keys trusted-keys.json
+./rce-finder -targets targets.txt -i-am-authorized -templates templates/packs -trusted-template-keys trusted-keys.json
+```
+
+Template validation rejects unknown fields, unsupported methods/body types,
+invalid canary usage, oversized payloads, and inconsistent prerequisites. The
+engine currently permits one request per template/job. No template is fetched
+from a remote repository.
+
+List and inspect local definitions:
+
+```bash
+./rce-finder templates list
+./rce-finder templates inspect -id jndi-generic-oob
+./rce-finder templates validate
+```
+
+## Passive fingerprints and explainable planning
+
+```bash
+./rce-finder fingerprint -targets targets.txt -i-am-authorized -output fingerprints.json
+./rce-finder -targets targets.txt -i-am-authorized -allow-unsigned-local-templates \
+  -fingerprints fingerprints.json -auto-select-technologies -explain-plan -dry-run
+```
+
+Fingerprinting requests only URLs explicitly present in the target file and
+never follows redirects or crawls. Its output is applicability evidence, not a
+vulnerability finding. Technology auto-selection is opt-in; the default runs
+all explicitly selected templates so an unrecognized stack does not create
+false assurance.
+
+## Scheduler, snapshots, and resume
+
+`-rate` sets the global request rate and `-host-rate` the per-host rate.
+`-retries` (0–5) applies only to transient network failures. The host error
+budget opens a circuit after repeated network failures; policy blocks, invalid
+templates, and OOB failures are not retried. Jobs are deduplicated by target,
+template ID, and request shape. `-progress` emits redacted structured events.
+
+Write a snapshot and resume it later:
+
+```bash
+./rce-finder -targets targets.txt -i-am-authorized -allow-unsigned-local-templates -results scans/run.json
+./rce-finder scan -targets targets.txt -i-am-authorized -allow-unsigned-local-templates -resume scans/run.json
+```
+
+Resume requires matching scope, template, and non-secret execution-policy
+fingerprints. Completed terminal jobs are not resent. Errors, blocked work, and
+inconclusive results remain pending for review or retry. Cookies, authorization
+headers, and other request secrets are never written to snapshots.
+
+## HTML, CSV, and stored-snapshot reports
+
+```bash
+./rce-finder report -snapshot scans/run.json -format html -output report.html
+./rce-finder report -snapshot scans/run.json -format csv -output report.csv
+```
+
+All report formats share the same classification model and redaction boundary.
+Evidence includes safe metadata and hashes, not raw request/response bodies.
+
+## CI exit policy
+
+By default, operational errors and weak findings do not create a separate CI
+failure policy. To fail for a confirmed high/critical finding:
+
+```bash
+./rce-finder -targets targets.txt -i-am-authorized -allow-unsigned-local-templates \
+  -fail-on confirmed -fail-severity high
+```
+
+`-fail-on high-confidence` also includes `CONFIRMED`. `POTENTIAL`,
+`INCONCLUSIVE`, and passive fingerprints never fail CI by themselves.
+
+## Local integration lab and protocol corpus status
+
+```bash
+go test -tags=integration -count=1 ./labs/tests
+docker compose -f labs/docker-compose.yml up --build
+```
+
+The lab uses local non-executing fixtures and a fake OOB API. It validates
+correlation, mismatch rejection, timeouts, redirects, filtering, cancellation,
+and concurrency—not real framework exploitability. Framework-specific packs
+need controlled version-specific vulnerable/patched application validation
+before production reliance.
+
+GraphQL, SOAP/WSDL, and WebSocket helpers currently parse bounded explicit
+request corpora only. They do not create targets or perform live protocol
+scans. Live TCP/WebSocket adapters and enterprise/distributed features remain
+unimplemented pending complete scope, correlation, redaction, and lab controls.
 
 ## Flags reference
 

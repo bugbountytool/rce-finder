@@ -15,6 +15,7 @@
 package template
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +36,19 @@ const (
 	SeverityCritical Severity = "critical"
 )
 
+type Prerequisites struct {
+	RequiredTechnologies         []string `yaml:"required_technologies,omitempty"`
+	MinimumFingerprintConfidence int      `yaml:"minimum_fingerprint_confidence,omitempty"`
+	AllowedMethods               []string `yaml:"allowed_methods,omitempty"`
+	AllowedContentTypes          []string `yaml:"allowed_content_types,omitempty"`
+	RequiredMode                 string   `yaml:"required_mode,omitempty"`
+}
+
+type Matcher struct {
+	Type  string `yaml:"type"`
+	Value string `yaml:"value"`
+}
+
 // InjectionPoint describes where in the HTTP request the payload is placed.
 type InjectionPoint struct {
 	// Location is one of: "header", "query", "body", "path".
@@ -48,17 +62,18 @@ type InjectionPoint struct {
 type Template struct {
 	// SchemaVersion controls compatibility for the declarative template model.
 	// Empty means legacy v1 and remains supported during the migration.
-	SchemaVersion string   `yaml:"schema_version,omitempty"`
-	ID            string   `yaml:"id"`
-	Name          string   `yaml:"name"`
-	Severity      Severity `yaml:"severity"`
-	References    []string `yaml:"references"`
-	Vulnclass     string   `yaml:"vuln_class"` // e.g. "ssti", "deserialization", "el-injection"
-	CWEs          []string `yaml:"cwe,omitempty"`
-	CVEs          []string `yaml:"cve,omitempty"`
-	Technologies  []string `yaml:"technologies,omitempty"`
-	// Mode declares the greatest capability this template requires. Accepted
-	// values are passive, safe-validation, and advanced-authorized.
+	SchemaVersion string        `yaml:"schema_version,omitempty"`
+	ID            string        `yaml:"id"`
+	Name          string        `yaml:"name"`
+	Severity      Severity      `yaml:"severity"`
+	References    []string      `yaml:"references"`
+	Vulnclass     string        `yaml:"vuln_class"` // e.g. "ssti", "deserialization", "el-injection"
+	CWEs          []string      `yaml:"cwe,omitempty"`
+	CVEs          []string      `yaml:"cve,omitempty"`
+	Technologies  []string      `yaml:"technologies,omitempty"`
+	Prerequisites Prerequisites `yaml:"prerequisites,omitempty"`
+	// Mode declares the capability this template requires. Only passive and
+	// safe-validation definitions are supported; advanced templates are rejected.
 	Mode string `yaml:"mode,omitempty"`
 	// ConfidenceRequirements documents the evidence required to classify a hit.
 	ConfidenceRequirements []string `yaml:"confidence_requirements,omitempty"`
@@ -80,7 +95,8 @@ type Template struct {
 	BodyFields      []requestbody.Field `yaml:"body_fields,omitempty"`
 	// MultipartBoundary is fixed in reviewed templates so request bytes are
 	// reproducible. Random per-request boundaries are not currently supported.
-	MultipartBoundary string `yaml:"multipart_boundary,omitempty"`
+	MultipartBoundary string    `yaml:"multipart_boundary,omitempty"`
+	Matchers          []Matcher `yaml:"matchers,omitempty"`
 
 	// TimeoutSeconds is how long to wait for an OOB callback before this
 	// probe is marked NOT_VULNERABLE rather than CONFIRMED.
@@ -106,8 +122,11 @@ func (t *Template) Validate() error {
 	if t.Mode == "" {
 		t.Mode = "safe-validation"
 	}
-	if t.Mode != "passive" && t.Mode != "safe-validation" && t.Mode != "advanced-authorized" {
-		return fmt.Errorf("template %s: unknown mode %q", t.ID, t.Mode)
+	if t.Mode == "passive" {
+		return fmt.Errorf("template %s: passive definitions cannot be used for active OOB probes", t.ID)
+	}
+	if t.Mode != "safe-validation" {
+		return fmt.Errorf("template %s: unsupported or unsafe mode %q", t.ID, t.Mode)
 	}
 	for _, cwe := range t.CWEs {
 		if !strings.HasPrefix(cwe, "CWE-") {
@@ -177,10 +196,54 @@ func (t *Template) Validate() error {
 	if t.Method == "" {
 		t.Method = "GET"
 	}
+	switch t.Method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+	default:
+		return fmt.Errorf("template %s: unsupported HTTP method %q", t.ID, t.Method)
+	}
+	if len(t.Prerequisites.AllowedMethods) > 0 && !containsFold(t.Prerequisites.AllowedMethods, t.Method) {
+		return fmt.Errorf("template %s: method %q is not allowed by prerequisites", t.ID, t.Method)
+	}
+	contentType := t.BodyContentType
+	if contentType == "" {
+		contentType = "application/x-www-form-urlencoded"
+	}
+	if len(t.Prerequisites.AllowedContentTypes) > 0 && !containsFold(t.Prerequisites.AllowedContentTypes, contentType) {
+		return fmt.Errorf("template %s: content type %q is not allowed by prerequisites", t.ID, contentType)
+	}
+	for _, matcher := range t.Matchers {
+		if matcher.Type != "word" && matcher.Type != "status" || matcher.Value == "" {
+			return fmt.Errorf("template %s: matcher must be a nonempty status or word matcher", t.ID)
+		}
+	}
+	if len(t.InjectionPoints) > 32 {
+		return fmt.Errorf("template %s: exceeds 32 injection points", t.ID)
+	}
+	if len(t.PayloadTemplate) > 64<<10 {
+		return fmt.Errorf("template %s: payload exceeds 64 KiB", t.ID)
+	}
+	if t.TimeoutSeconds < 0 || t.TimeoutSeconds > 120 {
+		return fmt.Errorf("template %s: timeout_seconds must be between 1 and 120", t.ID)
+	}
+	if t.Prerequisites.MinimumFingerprintConfidence < 0 || t.Prerequisites.MinimumFingerprintConfidence > 100 {
+		return fmt.Errorf("template %s: minimum fingerprint confidence must be between 0 and 100", t.ID)
+	}
+	if t.Prerequisites.RequiredMode != "" && t.Prerequisites.RequiredMode != t.Mode {
+		return fmt.Errorf("template %s: prerequisite mode must match declared mode", t.ID)
+	}
 	if t.TimeoutSeconds <= 0 {
 		t.TimeoutSeconds = 10
 	}
 	return nil
+}
+
+func containsFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // Render substitutes the canary token into the payload.
@@ -211,7 +274,9 @@ func LoadDir(dir string) ([]*Template, error) {
 			return nil, fmt.Errorf("reading %s: %w", path, err)
 		}
 		var t Template
-		if err := yaml.Unmarshal(data, &t); err != nil {
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&t); err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", path, err)
 		}
 		if err := t.Validate(); err != nil {

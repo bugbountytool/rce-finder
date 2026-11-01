@@ -15,6 +15,7 @@ func WriteMarkdown(w io.Writer, results []engine.Result) error {
 		return err
 	}
 	for _, result := range results {
+		result = sanitized(result)
 		detail := result.Detail
 		if result.Canary != "" {
 			detail = strings.ReplaceAll(detail, result.Canary, "[redacted-canary]")

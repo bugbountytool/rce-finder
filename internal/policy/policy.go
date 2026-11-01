@@ -45,10 +45,7 @@ func (p Policy) ValidateTarget(u *url.URL) error {
 }
 
 func (p Policy) AllowsTemplate(mode Mode) bool {
-	if mode == "" || mode == ModePassive || mode == ModeSafeValidation {
-		return p.Mode == ModeSafeValidation || p.Mode == ModeAdvanced || p.Mode == ModePassive
-	}
-	return mode == ModeAdvanced && p.Mode == ModeAdvanced
+	return p.Mode == ModeSafeValidation && (mode == "" || mode == ModeSafeValidation)
 }
 
 func isNonPublic(a netip.Addr) bool {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func captureCLI(t *testing.T) (*bytes.Buffer, *bytes.Buffer) {
@@ -23,11 +26,42 @@ func captureCLI(t *testing.T) (*bytes.Buffer, *bytes.Buffer) {
 func TestFingerprintCommandRequestsOnlyExplicitURLs(t *testing.T) {
 	var mu sync.Mutex
 	var paths []string
+	var starts []time.Time
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		paths = append(paths, r.URL.Path)
+		starts = append(starts, time.Now())
 		mu.Unlock()
 		w.Header().Set("Server", "test-server/1.0")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	targets := filepath.Join(dir, "targets.txt")
+	if err := os.WriteFile(targets, []byte(server.URL+"/one?token=query-secret\n"+server.URL+"/two\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _ := captureCLI(t)
+	if err := runFingerprint([]string{"-targets", targets, "-allow-private", "-i-am-authorized", "-rate", "20"}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 2 || paths[0] != "/one" || paths[1] != "/two" {
+		t.Fatalf("requested paths = %#v", paths)
+	}
+	if starts[1].Sub(starts[0]) < 40*time.Millisecond {
+		t.Fatalf("fingerprint requests started less than the configured interval apart: %s", starts[1].Sub(starts[0]))
+	}
+	if strings.Contains(stdout.String(), "query-secret") || !strings.Contains(stdout.String(), "redacted") {
+		t.Fatalf("fingerprint output did not redact query secrets: %s", stdout.String())
+	}
+}
+
+func TestFingerprintCommandCancelsPendingRequest(t *testing.T) {
+	requested := make(chan struct{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested <- struct{}{}
 		_, _ = io.WriteString(w, "ok")
 	}))
 	defer server.Close()
@@ -37,13 +71,28 @@ func TestFingerprintCommandRequestsOnlyExplicitURLs(t *testing.T) {
 		t.Fatal(err)
 	}
 	captureCLI(t)
-	if err := runFingerprint([]string{"-targets", targets, "-allow-private", "-i-am-authorized"}); err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- fingerprintWithContext(ctx, []string{"-targets", targets, "-allow-private", "-i-am-authorized", "-rate", "1"})
+	}()
+	select {
+	case <-requested:
+	case <-time.After(time.Second):
+		t.Fatal("first fingerprint request was not sent")
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(paths) != 2 || paths[0] != "/one" || paths[1] != "/two" {
-		t.Fatalf("requested paths = %#v", paths)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fingerprint did not stop after cancellation")
+	}
+	if len(requested) != 0 {
+		t.Fatal("fingerprint sent another request after cancellation")
 	}
 }
 

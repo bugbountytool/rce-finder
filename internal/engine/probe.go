@@ -160,7 +160,7 @@ func (e *Engine) runOne(ctx context.Context, j job) Result {
 		ProbeID:      probeID,
 		ScanID:       e.Options.ScanID,
 		JobID:        j.ID,
-		Target:       j.Target.Raw,
+		Target:       redact.URL(j.Target.Raw),
 		TemplateID:   j.Tmpl.ID,
 		Name:         j.Tmpl.Name,
 		Severity:     string(j.Tmpl.Severity),
@@ -171,9 +171,20 @@ func (e *Engine) runOne(ctx context.Context, j job) Result {
 		Technologies: j.Tmpl.Technologies,
 		StartedAt:    started,
 	}
-	if !e.Options.Policy.AllowsTemplate(policy.Mode(j.Tmpl.Mode)) {
+	if !e.Options.Policy.AllowsTemplate(policy.Mode(j.Tmpl.EffectiveMode())) {
 		base.Status = StatusSkipped
-		base.Detail = fmt.Sprintf("template requires %s mode; scan policy is %s", j.Tmpl.Mode, e.Options.Policy.Mode)
+		base.Detail = fmt.Sprintf("template requires %s mode; scan policy is %s", j.Tmpl.EffectiveMode(), e.Options.Policy.Mode)
+		base.SkipReason = base.Detail
+		return finishResult(base)
+	}
+	if err := j.Tmpl.Validate(); err != nil {
+		base.Status = StatusError
+		base.Detail = "template validation failed before request construction"
+		return finishResult(base)
+	}
+	if j.Target.URL == nil || e.Options.Policy.ValidateTarget(j.Target.URL) != nil {
+		base.Status = StatusBlocked
+		base.Detail = "target denied by explicit scope and network policy"
 		base.SkipReason = base.Detail
 		return finishResult(base)
 	}
@@ -246,11 +257,10 @@ func (e *Engine) runOne(ctx context.Context, j job) Result {
 		base.Detail = "response body could not be read completely"
 		return finishResult(base)
 	}
-	if status, detail := classifyResponse(j.Tmpl, resp.StatusCode, responseBytes); status != "" {
-		base.Status = status
-		base.Detail = detail
-		return finishResult(base)
-	}
+	// A response matcher is only a weak hint. It must NOT pre-empt OOB
+	// correlation: a valid callback is stronger evidence than any matcher, so
+	// I defer the matcher outcome until after the OOB window closes.
+	matcherStatus, matcherDetail := classifyResponse(j.Tmpl, resp.StatusCode, responseBytes)
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		base.Status = StatusInconclusive
 		base.Detail = "response may indicate access control or request filtering; OOB correlation not attempted"
@@ -260,7 +270,7 @@ func (e *Engine) runOne(ctx context.Context, j job) Result {
 	// Wait up to the template's timeout for an OOB callback, polling
 	// periodically. This is where "confirmed" vs "not vulnerable" is
 	// actually decided — never from the HTTP response itself.
-	timeout := time.Duration(j.Tmpl.TimeoutSeconds) * time.Second
+	timeout := time.Duration(j.Tmpl.EffectiveTimeout()) * time.Second
 	deadline := time.Now().Add(timeout)
 	pollInterval := 500 * time.Millisecond
 
@@ -286,6 +296,13 @@ func (e *Engine) runOne(ctx context.Context, j job) Result {
 		}
 	}
 
+	// No OOB callback within the window. A matcher that fired is a weak
+	// advisory hint (POTENTIAL); otherwise this is a completed negative.
+	if matcherStatus != "" {
+		base.Status = matcherStatus
+		base.Detail = matcherDetail + "; no OOB callback observed within timeout"
+		return finishResult(base)
+	}
 	base.Status = StatusNotVulnerable
 	base.Detail = "no OOB callback observed within timeout"
 	return finishResult(base)
@@ -310,13 +327,16 @@ func (e *Engine) RunTarget(ctx context.Context, target scope.Target, tmpl *templ
 
 // buildRequest constructs the single HTTP request for a probe, injecting
 // the rendered payload at every location the template specifies.
-func buildRequest(ctx context.Context, target *url.URL, t *template.Template, payload string, bodyLimit ...int64) (*http.Request, error) {
-	limit := requestbody.MaxBytes
-	if len(bodyLimit) > 0 {
-		limit = bodyLimit[0]
+func buildRequest(ctx context.Context, target *url.URL, t *template.Template, payload string, bodyLimit int64) (*http.Request, error) {
+	limit := bodyLimit
+	if limit <= 0 || limit > requestbody.MaxBytes {
+		limit = requestbody.MaxBytes
 	}
 	u := *target
 	if t.PathTemplate != "" {
+		if strings.HasPrefix(t.PathTemplate, "/") || strings.Contains(t.PathTemplate, "..") || strings.Contains(t.PathTemplate, "\\") || strings.ContainsAny(t.PathTemplate, "\r\n") {
+			return nil, fmt.Errorf("template path must be relative and cannot contain traversal or control characters")
+		}
 		u.Path = joinPath(target.Path, t.PathTemplate)
 	}
 
@@ -393,6 +413,19 @@ func buildRequest(ctx context.Context, target *url.URL, t *template.Template, pa
 	if err != nil {
 		return nil, err
 	}
+	// Path-injected payloads (e.g. ${jndi:ldap://...}) must reach the target
+	// verbatim. Go's net/url always percent-encodes '{', '}' in a path, even
+	// via RawPath, which would corrupt such payloads. Setting Opaque makes the
+	// transport write the path+query verbatim; only genuinely illegal bytes
+	// (control, space, non-ASCII) are escaped.
+	if rawPathInjected {
+		opaque := escapePathMinimal(u.Path)
+		if u.RawQuery != "" {
+			opaque += "?" + u.RawQuery
+		}
+		req.URL.Opaque = opaque
+		req.URL.RawQuery = ""
+	}
 
 	for _, ip := range t.InjectionPoints {
 		if ip.Location == "header" {
@@ -408,7 +441,12 @@ func buildRequest(ctx context.Context, target *url.URL, t *template.Template, pa
 		}
 		req.Header.Set("Content-Type", ct)
 	}
-	req.Header.Set("User-Agent", "rce-finder/0.1 (+authorized-security-testing)")
+	// The scanner UA is a default, not an override: if a template declares
+	// User-Agent as an injection point (e.g. Log4Shell-style header probes),
+	// the payload must win. Otherwise the injection is silently dropped.
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "rce-finder/0.1 (+authorized-security-testing)")
+	}
 
 	return req, nil
 }
@@ -421,4 +459,22 @@ func joinPath(base, extra string) string {
 		return extra
 	}
 	return strings.TrimRight(base, "/") + "/" + extra
+}
+
+// escapePathMinimal percent-encodes only bytes that are illegal in a raw
+// request path (control characters, space, and non-ASCII). It deliberately
+// leaves payload-significant characters ($, {, }, ', :, /, etc.) intact so a
+// path-injected payload reaches the target verbatim. '%' is left as-is to
+// avoid double-encoding an already-escaped payload.
+func escapePathMinimal(p string) string {
+	var b strings.Builder
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		if c < 0x20 || c == 0x7f || c == ' ' || c >= 0x80 {
+			fmt.Fprintf(&b, "%%%02X", c)
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }

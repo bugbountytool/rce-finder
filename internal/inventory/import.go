@@ -3,6 +3,7 @@ package inventory
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +19,9 @@ const maxImportBytes = 16 << 20
 // URL is within explicit scope. Cookies, headers, bodies, and redirect entries
 // are discarded. No DNS or network operation is performed.
 func LoadHARJSON(path string, targets []scope.Target) ([]Endpoint, error) {
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("HAR import requires explicit target scope")
+	}
 	var doc struct {
 		Log struct {
 			Entries []struct {
@@ -54,6 +58,9 @@ func LoadHARJSON(path string, targets []scope.Target) ([]Endpoint, error) {
 // Explicit targets constrain the result even though Postman is not a scope
 // authority.
 func LoadPostmanJSON(path string, targets []scope.Target) ([]Endpoint, error) {
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("Postman import requires explicit target scope")
+	}
 	var doc struct {
 		Info map[string]json.RawMessage `json:"info"`
 		Item []postmanItem              `json:"item"`
@@ -186,9 +193,57 @@ func readJSON(path string, dst any) error {
 	if info.Size() > maxImportBytes {
 		return fmt.Errorf("import file exceeds %d-byte limit", maxImportBytes)
 	}
-	decoder := json.NewDecoder(f)
-	if err := decoder.Decode(dst); err != nil {
+	decoder := json.NewDecoder(io.LimitReader(f, maxImportBytes+1))
+	var raw json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
 		return err
 	}
+	if len(raw) == 0 {
+		return fmt.Errorf("empty JSON import")
+	}
+	if err := checkJSONDepth(raw, 0); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("import contains trailing JSON documents")
+		}
+		return fmt.Errorf("reading trailing import data: %w", err)
+	}
 	return nil
+}
+
+func checkJSONDepth(data []byte, depth int) error {
+	if depth > 64 {
+		return fmt.Errorf("import JSON exceeds 64 nesting levels")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok || delim != '{' && delim != '[' {
+		return nil
+	}
+	for decoder.More() {
+		if delim == '{' {
+			if _, err := decoder.Token(); err != nil {
+				return err
+			}
+		}
+		var child json.RawMessage
+		if err := decoder.Decode(&child); err != nil {
+			return err
+		}
+		if err := checkJSONDepth(child, depth+1); err != nil {
+			return err
+		}
+	}
+	_, err = decoder.Token()
+	return err
 }

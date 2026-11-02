@@ -294,6 +294,10 @@ Flags:`)
 		return storage.UpdateJobSnapshot(*resultsOut, snapshot)
 	}
 	results := eng.RunJobs(ctx, scanJobs)
+	// Persist at most once per interval rather than on every result, which
+	// would re-serialize the whole snapshot O(n) times for n results.
+	const persistInterval = 2 * time.Second
+	lastPersist := time.Now()
 	writeResult := func(w interface{ Write(engine.Result) error }, r engine.Result) error {
 		allResults = append(allResults, r)
 		if engine.Completed(r) {
@@ -302,7 +306,11 @@ Flags:`)
 		if err := w.Write(r); err != nil {
 			return err
 		}
-		return persist()
+		if time.Since(lastPersist) >= persistInterval {
+			lastPersist = time.Now()
+			return persist()
+		}
+		return nil
 	}
 	if *jsonOut {
 		w := report.NewJSONWriter(cliStdout)

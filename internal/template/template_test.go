@@ -20,8 +20,12 @@ func TestValidateAcceptsValidTemplateAndDefaults(t *testing.T) {
 	if err := tmpl.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	if tmpl.Method != "GET" || tmpl.TimeoutSeconds != 10 {
-		t.Fatalf("defaults = method %q timeout %d", tmpl.Method, tmpl.TimeoutSeconds)
+	if tmpl.Method != "GET" || tmpl.EffectiveTimeout() != 10 || tmpl.EffectiveMode() != "safe-validation" {
+		t.Fatalf("defaults = method %q timeout %d mode %q", tmpl.Method, tmpl.EffectiveTimeout(), tmpl.EffectiveMode())
+	}
+	// Validate must not mutate the template.
+	if tmpl.TimeoutSeconds != 0 {
+		t.Fatalf("Validate mutated TimeoutSeconds: %d", tmpl.TimeoutSeconds)
 	}
 	if got := tmpl.Render("abc.oob.test"); !strings.Contains(got, "abc.oob.test") {
 		t.Fatalf("Render() = %q, missing canary", got)

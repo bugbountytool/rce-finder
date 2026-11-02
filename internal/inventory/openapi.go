@@ -5,7 +5,6 @@ package inventory
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 )
@@ -19,16 +18,12 @@ type Endpoint struct {
 // LoadOpenAPIJSON reads OpenAPI v3 JSON. Server URLs and external references
 // are intentionally ignored, so an inventory cannot expand scan scope.
 func LoadOpenAPIJSON(path string) ([]Endpoint, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading OpenAPI document: %w", err)
-	}
 	var doc struct {
 		OpenAPI string                                `json:"openapi"`
 		Paths   map[string]map[string]json.RawMessage `json:"paths"`
 	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("parsing OpenAPI JSON: %w", err)
+	if err := readJSON(path, &doc); err != nil {
+		return nil, fmt.Errorf("reading OpenAPI document: %w", err)
 	}
 	if !strings.HasPrefix(doc.OpenAPI, "3.") {
 		return nil, fmt.Errorf("OpenAPI v3 JSON is required, got %q", doc.OpenAPI)

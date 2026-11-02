@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"strings"
 
 	"github.com/bugbountytool/rce-finder/internal/policy"
@@ -93,16 +94,23 @@ func ContainsEndpoint(target *url.URL, u *url.URL) bool {
 		effectivePort(target) != effectivePort(u) {
 		return false
 	}
-	base := target.EscapedPath()
-	path := u.EscapedPath()
+	base, err := url.PathUnescape(target.EscapedPath())
+	if err != nil {
+		return false
+	}
+	path, err := url.PathUnescape(u.EscapedPath())
+	if err != nil {
+		return false
+	}
 	if base == "" {
 		base = "/"
 	}
 	if path == "" {
 		path = "/"
 	}
-	base = strings.TrimSuffix(base, "/")
-	if base == "" {
+	base = strings.TrimSuffix(pathpkg.Clean("/"+strings.TrimPrefix(base, "/")), "/")
+	path = pathpkg.Clean("/" + strings.TrimPrefix(path, "/"))
+	if base == "" || base == "." {
 		return true
 	}
 	return path == base || strings.HasPrefix(path, base+"/")

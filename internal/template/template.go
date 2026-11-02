@@ -17,6 +17,7 @@ package template
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,13 +121,16 @@ func (t *Template) Validate() error {
 		return fmt.Errorf("template %s: oob_protocol must be 'dns' or 'http', got %q", t.ID, t.OOBProtocol)
 	}
 	if t.Mode == "" {
-		t.Mode = "safe-validation"
+		// Mode is read-only during validation; callers use EffectiveMode().
 	}
-	if t.Mode == "passive" {
+	if strings.HasPrefix(t.PathTemplate, "/") || strings.Contains(t.PathTemplate, "..") || strings.Contains(t.PathTemplate, "\\") || strings.ContainsAny(t.PathTemplate, "\r\n") {
+		return fmt.Errorf("template %s: path must be relative and cannot contain traversal or control characters", t.ID)
+	}
+	if t.EffectiveMode() == "passive" {
 		return fmt.Errorf("template %s: passive definitions cannot be used for active OOB probes", t.ID)
 	}
-	if t.Mode != "safe-validation" {
-		return fmt.Errorf("template %s: unsupported or unsafe mode %q", t.ID, t.Mode)
+	if t.EffectiveMode() != "safe-validation" {
+		return fmt.Errorf("template %s: unsupported or unsafe mode %q", t.ID, t.EffectiveMode())
 	}
 	for _, cwe := range t.CWEs {
 		if !strings.HasPrefix(cwe, "CWE-") {
@@ -170,8 +174,16 @@ func (t *Template) Validate() error {
 			if ip.Name == "" {
 				return fmt.Errorf("template %s: injection_points[%d] of type %q requires a name", t.ID, i, ip.Location)
 			}
+			if strings.ContainsAny(ip.Name, "\r\n\x00") || ip.Location == "header" && !validHeaderName(ip.Name) {
+				return fmt.Errorf("template %s: injection point %q has an invalid name", t.ID, ip.Name)
+			}
+			if ip.Location == "header" && (strings.EqualFold(ip.Name, "Host") || strings.EqualFold(ip.Name, "Content-Length") || strings.EqualFold(ip.Name, "Cookie") || strings.EqualFold(ip.Name, "Authorization")) {
+				return fmt.Errorf("template %s: sensitive or transport header %q cannot be an injection point", t.ID, ip.Name)
+			}
 		case "path":
-			// no name required
+			if !strings.Contains(t.PathTemplate, "{{inject}}") {
+				return fmt.Errorf("template %s: path injection requires a {{inject}} placeholder", t.ID)
+			}
 		default:
 			return fmt.Errorf("template %s: injection_points[%d] has unknown location %q", t.ID, i, ip.Location)
 		}
@@ -194,10 +206,10 @@ func (t *Template) Validate() error {
 		}
 	}
 	if t.Method == "" {
-		t.Method = "GET"
+		t.Method = http.MethodGet
 	}
 	switch t.Method {
-	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions:
 	default:
 		return fmt.Errorf("template %s: unsupported HTTP method %q", t.ID, t.Method)
 	}
@@ -228,13 +240,19 @@ func (t *Template) Validate() error {
 	if t.Prerequisites.MinimumFingerprintConfidence < 0 || t.Prerequisites.MinimumFingerprintConfidence > 100 {
 		return fmt.Errorf("template %s: minimum fingerprint confidence must be between 0 and 100", t.ID)
 	}
-	if t.Prerequisites.RequiredMode != "" && t.Prerequisites.RequiredMode != t.Mode {
+	if t.Prerequisites.RequiredMode != "" && t.Prerequisites.RequiredMode != t.EffectiveMode() {
 		return fmt.Errorf("template %s: prerequisite mode must match declared mode", t.ID)
 	}
-	if t.TimeoutSeconds <= 0 {
-		t.TimeoutSeconds = 10
-	}
 	return nil
+}
+
+func validHeaderName(name string) bool {
+	for _, r := range name {
+		if r <= 0x20 || r >= 0x7f || strings.ContainsRune("()<>@,;:\\\"/[]?={}", r) {
+			return false
+		}
+	}
+	return name != ""
 }
 
 func containsFold(values []string, want string) bool {
@@ -249,6 +267,24 @@ func containsFold(values []string, want string) bool {
 // Render substitutes the canary token into the payload.
 func (t *Template) Render(canary string) string {
 	return strings.ReplaceAll(t.PayloadTemplate, "{{canary}}", canary)
+}
+
+// EffectiveMode returns the declared capability mode, defaulting to
+// safe-validation when unset. It never mutates the template.
+func (t *Template) EffectiveMode() string {
+	if t.Mode == "" {
+		return "safe-validation"
+	}
+	return t.Mode
+}
+
+// EffectiveTimeout returns the OOB wait in seconds, defaulting to 10 when
+// unset or non-positive. It never mutates the template.
+func (t *Template) EffectiveTimeout() int {
+	if t.TimeoutSeconds <= 0 {
+		return 10
+	}
+	return t.TimeoutSeconds
 }
 
 // LoadDir loads and validates every *.yaml / *.yml file in dir.

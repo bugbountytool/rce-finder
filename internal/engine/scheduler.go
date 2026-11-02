@@ -226,7 +226,7 @@ func (e *Engine) runJob(ctx context.Context, job Job) Result {
 
 func (e *Engine) failedJob(job Job, status Status, detail string) Result {
 	now := time.Now()
-	return finishResult(Result{ProbeID: uuid.NewString(), ScanID: e.Options.ScanID, JobID: job.ID, Target: job.Target.Raw, TemplateID: job.Tmpl.ID, Name: job.Tmpl.Name, Severity: string(job.Tmpl.Severity), References: job.Tmpl.References, Status: status, Detail: detail, StartedAt: now, FinishedAt: now})
+	return finishResult(Result{ProbeID: uuid.NewString(), ScanID: e.Options.ScanID, JobID: job.ID, Target: redact.URL(job.Target.Raw), TemplateID: job.Tmpl.ID, Name: job.Tmpl.Name, Severity: string(job.Tmpl.Severity), References: job.Tmpl.References, Status: status, Detail: detail, StartedAt: now, FinishedAt: now})
 }
 
 func (e *Engine) doRequest(req *http.Request) (*http.Response, error) {

@@ -3,8 +3,8 @@
 - [x] M0 Stabilize: fix defects #1-#7 with regression tests
 - [x] M1 Finding model + verification kernel
 - [x] M2 Inventory graph (SQLite)
-- [ ] M3 Static tier (Semgrep adapter + Go SSA)
-- [ ] M4 Correlation (static <-> dynamic)
+- [x] M3 Static tier (Semgrep adapter + Go SSA)
+- [x] M4 Correlation (static <-> dynamic)
 - [ ] M5 API security engine
 - [ ] M6 Intel + SCA
 - [ ] M7 Config/cloud/mobile

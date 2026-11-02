@@ -52,6 +52,8 @@ func run(args []string) error {
 			return runGraph(args[1:])
 		case "sca":
 			return runSCA(args[1:])
+		case "investigate":
+			return runInvestigate(args[1:])
 		case "templates":
 			return runTemplates(args[1:])
 		case "report":

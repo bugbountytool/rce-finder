@@ -8,5 +8,5 @@
 - [x] M5 API security engine
 - [x] M6 Intel + SCA
 - [x] M7 Config/cloud/mobile
-- [ ] M8 AI advisory (isolated)
+- [x] M8 AI advisory (isolated)
 - [ ] M9 Reporting/workspace + patch verification

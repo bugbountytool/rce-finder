@@ -5,7 +5,7 @@
 - [x] M2 Inventory graph (SQLite)
 - [x] M3 Static tier (Semgrep adapter + Go SSA)
 - [x] M4 Correlation (static <-> dynamic)
-- [ ] M5 API security engine
+- [x] M5 API security engine
 - [ ] M6 Intel + SCA
 - [ ] M7 Config/cloud/mobile
 - [ ] M8 AI advisory (isolated)

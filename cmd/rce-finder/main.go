@@ -48,6 +48,8 @@ func run(args []string) error {
 			return runInventory(args[1:])
 		case "fingerprint":
 			return runFingerprint(args[1:])
+		case "graph":
+			return runGraph(args[1:])
 		case "templates":
 			return runTemplates(args[1:])
 		case "report":

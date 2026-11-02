@@ -59,4 +59,3 @@ func Handler() http.Handler {
 	})
 	return mux
 }
-

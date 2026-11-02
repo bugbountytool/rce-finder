@@ -132,4 +132,3 @@ capability in the layer. AIAdvisory has no Status field and Annotate never
 mutates a finding. Output is schema-validated and length-bounded; input is
 prompt-injection-inoculated. Advisory text is rendered in a separate report
 section, never merged into a classification.
-

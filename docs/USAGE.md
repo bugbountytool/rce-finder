@@ -275,4 +275,3 @@ vulnerability.
 ./rce-finder sca -package-lock package-lock.json -query-osv
 ./rce-finder sca -requirements requirements.txt
 ```
-

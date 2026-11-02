@@ -7,6 +7,6 @@
 - [x] M4 Correlation (static <-> dynamic)
 - [x] M5 API security engine
 - [x] M6 Intel + SCA
-- [ ] M7 Config/cloud/mobile
+- [x] M7 Config/cloud/mobile
 - [ ] M8 AI advisory (isolated)
 - [ ] M9 Reporting/workspace + patch verification

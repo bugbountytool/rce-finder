@@ -43,6 +43,16 @@ func Text(value string, secrets ...string) string {
 	return value
 }
 
+var urlInText = regexp.MustCompile(`https?://[^\s"'<>]+`)
+
+// FreeText redacts any URLs embedded in free-form text (removing user-info and
+// query values) in addition to any explicitly supplied secrets. Use it before
+// sending finding text to an external system such as an AI provider.
+func FreeText(value string, secrets ...string) string {
+	value = urlInText.ReplaceAllStringFunc(value, func(u string) string { return URL(u) })
+	return Text(value, secrets...)
+}
+
 // HeaderName allows only an explicit safe-header list, never Authorization or
 // Cookie variants, to be retained as evidence metadata.
 func HeaderName(name string) bool {

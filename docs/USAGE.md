@@ -239,3 +239,40 @@ unimplemented pending complete scope, correlation, redaction, and lab controls.
 ## Flags reference
 
 Run `./rce-finder -h` for the full, current flag list.
+
+## Investigation workflow (static source-to-sink)
+
+Analyze a local Go module for source→sink flows and produce a rich finding
+report. No network target is contacted; findings are source-classified.
+
+```bash
+./rce-finder investigate -source ./path/to/go/module -format markdown
+./rce-finder investigate -source ./path/to/go/module -format json -output findings.jsonl
+```
+
+A complete reachable source→sink flow is `HIGH_CONFIDENCE (source)`; a sink with
+no established flow is `POTENTIAL`. Dynamic confirmation requires the OOB scan
+path or a repeated controlled differential.
+
+## Security graph
+
+Build a local SQLite graph of assets, endpoints, and parameters from an explicit
+target plus a local import. No network I/O; imports never create targets.
+
+```bash
+./rce-finder graph -targets targets.txt -openapi openapi.json -db graph.db
+./rce-finder graph -db graph.db -show endpoints
+```
+
+## Software composition analysis
+
+Parse a local dependency manifest and report applicability. Add `-query-osv` to
+query the OSV API (network, opt-in). A version match is never a confirmed
+vulnerability.
+
+```bash
+./rce-finder sca -gomod go.mod
+./rce-finder sca -package-lock package-lock.json -query-osv
+./rce-finder sca -requirements requirements.txt
+```
+

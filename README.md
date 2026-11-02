@@ -92,6 +92,43 @@ are not yet implemented.
 
 Full walkthrough: docs/USAGE.md.
 
+## Expanded platform
+
+RCE Finder is now a vulnerability discovery and verification platform, not just
+an RCE scanner. The additions, each independently testable:
+
+- **Verification kernel** (`internal/verify`) — the only component that assigns a
+  finding's status, applying an explicit evidence rule table. No combination of
+  weak signals (version match, fingerprint, error string, AI text) can reach
+  `CONFIRMED`. `HIGH_CONFIDENCE` now has real producers: a repeated controlled
+  differential, or a complete reachable source→sink path.
+- **Shared finding model** (`internal/model`) — Candidate (hypothesis) vs Finding
+  (verified claim), source→sink Flow, a root-cause taxonomy with source/inferred
+  basis, provenance, and an AI-advisory type that cannot change a status.
+- **Security graph** (`internal/graph`, SQLite) — typed nodes (asset, endpoint,
+  parameter, source, sink, dependency) and edges; assesses whether a sink is
+  reachable from an exposed endpoint. `rce-finder graph`.
+- **Static tier** (`internal/analyze`) — a native Go SSA source→sink engine
+  (`gosast`), a sandboxed Semgrep subprocess adapter, config/IaC rules, and
+  offline Android manifest (AXML) + DEX-string analysis.
+- **Correlation** (`internal/correlate`) — joins static source→sink paths to
+  observed runtime endpoints/parameters. Static + repeated controlled dynamic
+  evidence yields `CONFIRMED (correlated)`; static alone stays source-basis.
+- **API security** (`internal/apisec`) — BOLA, BFLA, mass assignment, excessive
+  data exposure, negative-data rejection. Validated against a live vulnerable
+  lab API.
+- **Vulnerability intelligence + SCA** (`internal/intel`, `internal/sca`) — OSV,
+  KEV, EPSS with a strict confidence-tier model. A version match is
+  applicability only, never a confirmation. `rce-finder sca`.
+- **AI advisory** (`internal/ai`) — optional, isolated, disabled by default. The
+  model is a pure text transform with no network/shell; it redacts input,
+  validates output, and is structurally unable to change a finding's status.
+- **Patch verification** (`internal/patch`) — a finding is `FIXED` only when it
+  was confirmed before and no longer reproduces after a patch.
+- **Investigation workflow** — `rce-finder investigate -source <dir>` runs static
+  analysis → kernel → a rich finding report with the full source→sink path, root
+  cause, and evidence.
+
 ## Included starter templates
 
 | Template | Vulnerability class | Reference |

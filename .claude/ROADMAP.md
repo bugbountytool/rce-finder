@@ -9,4 +9,7 @@
 - [x] M6 Intel + SCA
 - [x] M7 Config/cloud/mobile
 - [x] M8 AI advisory (isolated)
-- [ ] M9 Reporting/workspace + patch verification
+- [x] M9 Reporting/workspace + patch verification
+
+All milestones complete. Remaining follow-ups: distributed workers, live
+WebSocket/TCP adapters, deep framework-model coverage (deferred per plan).

@@ -68,3 +68,68 @@ adapters, persistent enterprise state, and distributed workers remain planned
 work. GraphQL/SOAP/WSDL/WebSocket corpus parsing is local-only at present;
 there is no live TCP/WebSocket scanning path. These extensions must preserve
 the same safety invariants rather than bypass them.
+
+## Expanded platform architecture
+
+The platform is a single Go binary organized as four planes around a central
+verification kernel and security graph. This deliberately avoids a microservice
+architecture; engines are independently replaceable behind small interfaces.
+
+```
+KNOWLEDGE PLANE       STATIC PLANE         DYNAMIC PLANE
+inventory             gosast (Go SSA)      probe kernel (OOB)
+fingerprint           semgrep adapter      apisec (BOLA/BFLA/...)
+sca / sbom            config / IaC         differential checks
+intel (OSV/KEV/EPSS)  mobile (AXML/DEX)    auth state
+        \                   |                   /
+         \                  v                  v
+          \-------->  SECURITY GRAPH (SQLite)  <------/
+                          |
+                          v
+                  VERIFICATION KERNEL
+              (the only Status writer; rule table)
+                          |
+              +-----------+-----------+
+              v                       v
+          REPORTING            AI ADVISORY (optional, isolated)
+```
+
+### Verification kernel (internal/verify)
+
+The kernel is the single trust boundary. Analyzers produce Candidates and
+Observations; only `verify.Kernel.Verify` assigns a Finding's Status. The rule
+table is explicit and auditable:
+
+| Evidence | Status | Basis |
+|---|---|---|
+| exact OOB probe-ID + protocol | CONFIRMED | dynamic |
+| repeated differential + reachable flow | CONFIRMED | correlated |
+| repeated controlled differential | HIGH_CONFIDENCE | dynamic |
+| complete reachable source→sink flow | HIGH_CONFIDENCE | source |
+| error / pattern / unrepeated signal | POTENTIAL | none |
+| version / threat / fingerprint match | INCONCLUSIVE | applicability |
+| AI advisory text | INCONCLUSIVE | none (never evidence) |
+
+`VerificationBasis` (dynamic | source | correlated | applicability) is reported
+alongside Status so a source-confirmed weakness is never confused with a
+dynamically confirmed exploit. Forbidden transitions are enforced by the rule
+table: no version match, fingerprint, KEV/EPSS signal, or AI output can reach
+CONFIRMED.
+
+### Root cause and correlation
+
+Every code-level finding can carry a Flow (source, transformation steps, sink,
+sanitizers, reachability) and a RootCause (class, source/inferred basis, missing
+control, weakest-link assumption). The correlate package joins static flows to
+observed runtime endpoints; correlation raises confidence but never self-
+confirms without a controlled dynamic effect.
+
+### AI advisory isolation
+
+internal/ai runs only after classification, on redacted input, behind an
+opt-in provider that is a pure text transform with no network/shell/file
+capability in the layer. AIAdvisory has no Status field and Annotate never
+mutates a finding. Output is schema-validated and length-bounded; input is
+prompt-injection-inoculated. Advisory text is rendered in a separate report
+section, never merged into a classification.
+

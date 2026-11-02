@@ -18,6 +18,10 @@ jobs:
       - run: go build ./...
       - name: local integration lab
         run: go test -tags=integration -count=1 ./labs/tests
+      - name: API security lab
+        run: go test -tags=integration -count=1 ./internal/apisec
+      - name: static analyzer (Go SSA)
+        run: go test -tags=integration -count=1 ./internal/analyze/gosast
       - name: dry-run smoke test
         run: |
           go build -o rce-finder ./cmd/rce-finder

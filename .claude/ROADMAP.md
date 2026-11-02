@@ -1,6 +1,6 @@
 # Roadmap implementation tracker
 
-- [ ] M0 Stabilize: fix defects #1-#7 with regression tests
+- [x] M0 Stabilize: fix defects #1-#7 with regression tests
 - [ ] M1 Finding model + verification kernel
 - [ ] M2 Inventory graph (SQLite)
 - [ ] M3 Static tier (Semgrep adapter + Go SSA)

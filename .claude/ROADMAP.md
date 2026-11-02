@@ -6,7 +6,7 @@
 - [x] M3 Static tier (Semgrep adapter + Go SSA)
 - [x] M4 Correlation (static <-> dynamic)
 - [x] M5 API security engine
-- [ ] M6 Intel + SCA
+- [x] M6 Intel + SCA
 - [ ] M7 Config/cloud/mobile
 - [ ] M8 AI advisory (isolated)
 - [ ] M9 Reporting/workspace + patch verification
